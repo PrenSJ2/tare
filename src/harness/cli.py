@@ -26,6 +26,7 @@ from . import (
     edges,
     install as install_mod,
     lookup as lookup_mod,
+    memory as memory_mod,
     mine as mine_mod,
     paths,
     scan,
@@ -82,6 +83,12 @@ def _cmd_build(conn, args) -> int:
 
 def _cmd_lookup(conn, args) -> int:
     results = lookup_mod.lookup(conn, args.query, limit=args.limit)
+    # Recorded before rendering, and never allowed to break the search itself:
+    # the point of the tool is answering the question, not bookkeeping.
+    try:
+        memory_mod.record_lookup(conn, args.query, results)
+    except Exception:
+        pass
     if not results:
         print("nothing matched")
         return 0
@@ -187,6 +194,15 @@ def _cmd_activate(conn, args) -> int:
         print(f"{args.name} is already live")
     else:
         print(f"restored {args.name}")
+        # An activation from 'vaulted' is the record saying a shelving
+        # decision was wrong -- the single most useful thing this tool can
+        # learn about its own judgement.
+        try:
+            memory_mod.record_activation(
+                conn, result.get("id") or args.name, args.name, was=result.get("was")
+            )
+        except Exception:
+            pass
     for gone in result.get("unpromoted", []):
         print(f"  un-promoted {gone} -- its plugin serves it again")
     return 0
@@ -202,6 +218,11 @@ def _cmd_deactivate(conn, args) -> int:
         print(f"{args.name} shelved again")
     else:
         print(f"{args.name} was not vaulted; nothing to do")
+    return 0
+
+
+def _cmd_learned(conn, args) -> int:
+    print(memory_mod.render(memory_mod.suggestions(conn)))
     return 0
 
 
@@ -354,6 +375,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("name")
 
     add("doctor", "check the vault and installation for drift", _cmd_doctor)
+    add("learned", "what usage has taught the harness about itself", _cmd_learned)
 
     p = add("vault", "shelve never-invoked capabilities", _cmd_vault)
     p.add_argument("--apply", action="store_true", help="perform it (default is a dry run)")
