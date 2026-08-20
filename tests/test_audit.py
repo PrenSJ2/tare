@@ -362,3 +362,43 @@ def test_golden_db_render_does_not_raise(golden_safe_home):
     a = audit.audit(_golden_conn())
     out = audit.render(a)
     assert "Always-loaded index" in out
+
+
+def test_audit_counts_project_instruction_files(fake_home, monkeypatch):
+    """A project's CLAUDE.md loads on every turn in that project, exactly like
+    the skill index. On the real machine the largest was ~37,800 tokens --
+    nearly four times the whole capability index -- and auditing capabilities
+    while ignoring it measures the smaller half of the problem.
+    """
+    from harness import audit as audit_mod
+
+    project = fake_home.parent / "myproject"
+    project.mkdir()
+    (project / "CLAUDE.md").write_text("x" * 4000)
+    (fake_home / "projects" / project.name.join(("-", ""))).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(audit_mod, "project_instructions",
+                        lambda: [(1000, 50, "myproject", "CLAUDE.md")])
+
+    conn = db.connect()
+    report = audit_mod.audit(conn)
+    assert report.instructions == [(1000, 50, "myproject", "CLAUDE.md")]
+    assert "myproject/CLAUDE.md" in audit_mod.render(report)
+
+
+def test_a_heavy_instruction_file_is_called_out(fake_home, monkeypatch):
+    from harness import audit as audit_mod
+
+    monkeypatch.setattr(audit_mod, "project_instructions",
+                        lambda: [(40000, 2800, "homelab", "CLAUDE.md")])
+    conn = db.connect()
+    out = audit_mod.render(audit_mod.audit(conn))
+    assert "heavier than the whole index" in out
+    assert "saves less than pruning that one file" in out
+
+
+def test_no_instruction_files_adds_no_noise(fake_home, monkeypatch):
+    from harness import audit as audit_mod
+
+    monkeypatch.setattr(audit_mod, "project_instructions", lambda: [])
+    conn = db.connect()
+    assert "Project instructions" not in audit_mod.render(audit_mod.audit(conn))

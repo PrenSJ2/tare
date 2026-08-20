@@ -39,6 +39,51 @@ class Audit:
     disabled_skills: int
     disabled_tokens: int
     coverage: tuple  # (classified, total_skill_md_files_found)
+    instructions: list = field(default_factory=list)  # (tokens, lines, project, file)
+
+
+# A project's instruction file is loaded on EVERY turn in that project, the
+# same as the skill index -- and on this machine the largest is nearly four
+# times the whole index. Auditing capabilities while ignoring it measures the
+# smaller half of the problem.
+_INSTRUCTION_FILES = ("CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md")
+
+# Roughly the size of the entire always-loaded capability index. An
+# instruction file past this is not a file any more, it is a context budget.
+HEAVY_INSTRUCTIONS = 10_000
+
+
+def project_instructions() -> list[tuple[int, int, str, str]]:
+    """(tokens, lines, project, filename) for every project instruction file,
+    heaviest first.
+
+    Read from disk rather than the graph: these are not capabilities, they are
+    the accumulated project knowledge that grows quietly because nothing ever
+    prunes it and nothing has ever measured it.
+    """
+    from . import memory
+
+    found: list[tuple[int, int, str, str]] = []
+    projects = paths.projects_dir()
+    if not projects.is_dir():
+        return found
+    for entry in sorted(projects.iterdir()):
+        if not entry.is_dir():
+            continue
+        root = memory.resolve_project(entry.name)
+        if root is None:
+            continue
+        for name in _INSTRUCTION_FILES:
+            path = root / name
+            try:
+                if not path.is_file():
+                    continue
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            found.append((paths.est_tokens(text), len(text.splitlines()), root.name, name))
+    found.sort(reverse=True)
+    return found
 
 
 def audit(conn) -> Audit:
@@ -59,6 +104,7 @@ def audit(conn) -> Audit:
         disabled_skills=disabled_skills,
         disabled_tokens=disabled_tokens,
         coverage=coverage,
+        instructions=project_instructions(),
     )
 
 
@@ -267,5 +313,22 @@ def render(a: Audit) -> str:
         f"Coverage: {classified}/{found} SKILL.md files classified ({gap_note}) -- "
         "scanner does not reach every layout (e.g. .agents/skills/, .claude/skills/)"
     )
+
+    if a.instructions:
+        heaviest = a.instructions[0]
+        lines.append("")
+        lines.append("Project instructions (loaded every turn IN THAT PROJECT):")
+        for tokens, count, project, name in a.instructions[:5]:
+            flag = "  <-- heavier than the whole index above" if tokens >= HEAVY_INSTRUCTIONS else ""
+            lines.append(f"  {tokens:7,} tok  {count:5,} lines  {project}/{name}{flag}")
+        if len(a.instructions) > 5:
+            rest = sum(t for t, _, _, _ in a.instructions[5:])
+            lines.append(f"  … {len(a.instructions) - 5} more, ~{rest:,} tok combined")
+        if heaviest[0] >= HEAVY_INSTRUCTIONS:
+            lines.append("")
+            lines.append(
+                f"  {heaviest[2]}'s instructions cost ~{heaviest[0]:,} tok on every turn "
+                f"there -- shelving capabilities saves less than pruning that one file."
+            )
 
     return "\n".join(lines)
