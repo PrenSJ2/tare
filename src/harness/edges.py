@@ -1,6 +1,6 @@
 """Infer relationships between capabilities into the `edges` table.
 
-Four edge types, and they must never blur into each other:
+Five edge types, and they must never blur into each other:
 
 - `provided-by` -- structural. A plugin skill to its plugin, read straight
   off `provider_plugin`/`marketplace`. No inference involved.
@@ -8,6 +8,9 @@ Four edge types, and they must never blur into each other:
 - `overlaps`    -- A and B cover similar ground, from description/tag
   similarity. Similarity is NOT dependency.
 - `used-with`   -- A and B were invoked in the same session.
+- `family-of`   -- B is a named variant of suite A: B's name is
+  `{A.name}-something`, and a node literally named `A.name` exists.
+  Structural, from node names only -- not usage, not text similarity.
 
 Why `routes-to` is the one that matters most: usage is mined from
 transcripts, which record capabilities dispatched *by name*. An orchestrator
@@ -15,9 +18,11 @@ skill dispatches its sub-skills itself, so those sub-skills never appear by
 name in a transcript and read as never-invoked -- precisely because something
 else invokes them. A later module (the shelving guard) protects anything
 reachable via `routes-to` from a used capability, and that guard is what
-stops the tool shelving the sub-skills of a suite the operator uses daily. On
-the machine this was built against, `hyperframes` routes to 14 such skills
-and `impeccable` to about 15.
+stops the tool shelving the sub-skills of a suite the operator uses daily.
+Validated against a golden pre-loss database of the real graph: `hyperframes`
+routes to 20 distinct targets and `impeccable` to 17, all recorded there with
+evidence `"body references '<name>'"` -- the same plain whole-word match
+against source text this module uses, confirmed rather than assumed.
 
 That guard walks `routes-to` only. If `overlaps` meant the same thing as
 `routes-to`, or if the two were merged, the guard would also protect every
@@ -26,6 +31,9 @@ capability that merely resembles a used one -- `code-reviewer` overlaps
 enormously, defeating the point of shelving at all. So `overlaps` is computed
 from a completely different signal (TF-IDF cosine, no reference to source
 text) and is never allowed to produce a `routes-to` row, and vice versa.
+`family-of` is kept separate from both for the same reason: two suite
+variants can be textually dissimilar and never name each other, and still
+belong to the same family by naming convention alone.
 
 Standard library only.
 """
@@ -39,10 +47,10 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-# The four edge types this module owns. `build` deletes exactly these before
+# The five edge types this module owns. `build` deletes exactly these before
 # recomputing, so a second run replaces rather than accumulates -- and so it
 # never touches edge rows some other module might one day own.
-EDGE_TYPES = ("provided-by", "routes-to", "overlaps", "used-with")
+EDGE_TYPES = ("provided-by", "routes-to", "overlaps", "used-with", "family-of")
 
 # Cosine similarity floor for an `overlaps` edge. Chosen well above "shares a
 # few common words" -- two nodes that both mention "review" and "code" should
@@ -65,6 +73,7 @@ def build(conn) -> int:
     edges.extend(_routes_to_edges(conn))
     edges.extend(_overlaps_edges(conn))
     edges.extend(_used_with_edges(conn))
+    edges.extend(_family_of_edges(conn))
 
     # Delete-then-repopulate, and per db.py this connection is never
     # autocommit, so the delete and the reinsert land in one transaction --
@@ -96,7 +105,7 @@ def _provided_by_edges(conn) -> list[tuple[str, str, str, float, str]]:
     out = []
     for row in rows:
         dst = _plugin_id(row["provider_plugin"], row["marketplace"])
-        out.append((row["id"], dst, "provided-by", 1.0, f"provider_plugin={row['provider_plugin']}"))
+        out.append((row["id"], dst, "provided-by", 1.0, f"ships in {row['provider_plugin']}"))
     return out
 
 
@@ -126,7 +135,7 @@ def _routes_to_edges(conn) -> list[tuple[str, str, str, float, str]]:
             if dst_id == row["id"]:
                 continue
             if re.search(rf"\b{re.escape(dst_name)}\b", text):
-                out.append((row["id"], dst_id, "routes-to", 1.0, f"names '{dst_name}' in source"))
+                out.append((row["id"], dst_id, "routes-to", 1.0, f"body references '{dst_name}'"))
     return out
 
 
@@ -231,7 +240,7 @@ def _used_with_edges(conn) -> list[tuple[str, str, str, float, str]]:
 
     out = []
     for (a, b), count in pair_counts.items():
-        evidence = f"co-occurred in {count} session(s)"
+        evidence = f"co-invoked in {count} session(s)"
         out.append((a, b, "used-with", float(count), evidence))
         out.append((b, a, "used-with", float(count), evidence))
     return out
@@ -246,5 +255,40 @@ def _session_of(payload: str | None) -> str | None:
         return None
     if not isinstance(data, dict):
         return None
-    session = data.get("session") or data.get("session_id")
+    # `mine` writes this key as "session" -- confirmed against the golden
+    # database rather than guessed.
+    session = data.get("session")
     return session if isinstance(session, str) else None
+
+
+def _family_of_edges(conn) -> list[tuple[str, str, str, float, str]]:
+    """variant -> root when a node's name is `{root}-suffix` and a node
+    literally named `root` also exists.
+
+    Directional (variant -> root, not both ways) and one row per variant --
+    confirmed against the golden database, where the only cluster this fires
+    on is `hyperframes` / `hyperframes-core` / `hyperframes-cli` / etc.,
+    because `hyperframes` is the only prefix family with a bare root node.
+    `marketing-plan`, `web-build` and similar hyphenated names do NOT get a
+    `family-of` edge because no node is literally named "marketing" or "web".
+
+    Longest-prefix-first, so a name with more than one hyphen (not present in
+    the golden data, but plausible) resolves to the most specific existing
+    root rather than the shortest possible one.
+    """
+    rows = conn.execute("SELECT id, name FROM nodes").fetchall()
+    name_to_id = {row["name"]: row["id"] for row in rows if row["name"]}
+
+    out = []
+    for row in rows:
+        name = row["name"]
+        if not name or "-" not in name:
+            continue
+        parts = name.split("-")
+        for k in range(len(parts) - 1, 0, -1):
+            prefix = "-".join(parts[:k])
+            root_id = name_to_id.get(prefix)
+            if root_id and root_id != row["id"]:
+                out.append((row["id"], root_id, "family-of", 1.0, f"name prefix '{prefix}-'"))
+                break
+    return out

@@ -236,8 +236,50 @@ def test_routes_to_and_overlaps_are_independent_signals(fake_home):
 
 
 # ---------------------------------------------------------------------------
-# used-with
+# family-of
 # ---------------------------------------------------------------------------
+
+def test_family_of_edge_when_root_node_exists(fake_home):
+    conn = db.connect()
+    _insert_node(conn, "skill:hyperframes", "hyperframes")
+    _insert_node(conn, "skill:hyperframes-core", "hyperframes-core")
+    _insert_node(conn, "skill:hyperframes-cli", "hyperframes-cli")
+
+    edges.build(conn)
+
+    got = _edges_of_type(conn, "family-of")
+    assert got[("skill:hyperframes-core", "skill:hyperframes")] == (1.0, "name prefix 'hyperframes-'")
+    assert got[("skill:hyperframes-cli", "skill:hyperframes")] == (1.0, "name prefix 'hyperframes-'")
+    # Directional only: the root does not point back at its variants.
+    assert ("skill:hyperframes", "skill:hyperframes-core") not in got
+
+
+def test_no_family_of_edge_without_a_literal_root_node(fake_home):
+    """marketing-plan, web-build etc. must NOT get a family-of edge: no node
+    is literally named "marketing" or "web" on this machine's real graph."""
+    conn = db.connect()
+    _insert_node(conn, "skill:marketing-plan", "marketing-plan")
+    _insert_node(conn, "skill:marketing-ideas", "marketing-ideas")
+
+    edges.build(conn)
+
+    assert _edges_of_type(conn, "family-of") == {}
+
+
+def test_family_of_prefers_longest_matching_prefix(fake_home):
+    conn = db.connect()
+    _insert_node(conn, "skill:hyperframes", "hyperframes")
+    _insert_node(conn, "skill:hyperframes-core", "hyperframes-core")
+    _insert_node(conn, "skill:hyperframes-core-extra", "hyperframes-core-extra")
+
+    edges.build(conn)
+
+    got = _edges_of_type(conn, "family-of")
+    # Should resolve to the more specific "hyperframes-core", not skip past
+    # it straight to the shorter "hyperframes".
+    assert ("skill:hyperframes-core-extra", "skill:hyperframes-core") in got
+    assert ("skill:hyperframes-core-extra", "skill:hyperframes") not in got
+
 
 def test_used_with_edge_from_shared_session(fake_home):
     conn = db.connect()
