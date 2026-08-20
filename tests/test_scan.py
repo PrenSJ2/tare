@@ -776,3 +776,53 @@ def test_scan_order_independent(tmp_path, monkeypatch):
     conn_b.close()
 
     assert snap_a == snap_b
+
+
+def test_scan_results_survive_reopening_the_database(fake_home):
+    """Every scanner must commit.
+
+    This is the test the suite was missing: uncommitted writes are visible on
+    the SAME connection, so a scan that never commits looks perfectly correct
+    to every other test here -- while writing nothing at all to disk. Found by
+    running against a real configuration, where scan reported "63 agents" and
+    the database was completely unchanged.
+    """
+    from harness import db, scan
+
+    d = fake_home / "skills" / "alpha"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text("---\nname: alpha\ndescription: x.\n---\n\nBody.\n")
+    (fake_home / "agents" / "beta.md").write_text("---\nname: beta\ndescription: y.\n---\n\nBody.\n")
+
+    conn = db.connect()
+    scan.scan_user_skills(conn)
+    scan.scan_agents(conn)
+    scan.scan_plugin_skills(conn)
+    scan.scan_vaulted(conn)
+    conn.close()
+
+    fresh = db.connect()
+    ids = {r["id"] for r in fresh.execute("SELECT id FROM nodes")}
+    assert "skill:alpha" in ids, "scan_user_skills did not commit"
+    assert "agent:beta" in ids, "scan_agents did not commit"
+
+
+def test_a_previously_vaulted_node_returns_to_live_once_its_file_is_back(fake_home):
+    """State must follow the filesystem, not linger from a previous run."""
+    from harness import db, scan
+
+    conn = db.connect()
+    conn.execute(
+        "INSERT INTO nodes (id, kind, name, origin, state, path) "
+        "VALUES ('agent:gamma','agent','gamma','user-authored','vaulted','/gone/gamma.md')"
+    )
+    conn.commit()
+
+    (fake_home / "agents" / "gamma.md").write_text("---\nname: gamma\ndescription: z.\n---\n\nBody.\n")
+    scan.scan_agents(conn)
+    conn.close()
+
+    fresh = db.connect()
+    row = fresh.execute("SELECT state, path FROM nodes WHERE id='agent:gamma'").fetchone()
+    assert row["state"] == "live"
+    assert row["path"].endswith("agents/gamma.md")

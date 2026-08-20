@@ -496,6 +496,7 @@ def scan_user_skills(conn) -> int:
         found_ids.add(final_id)
 
     _prune(conn, kind="skill", origin="user-authored", keep=found_ids | protected, exclude_states=("vaulted",))
+    conn.commit()
     return len(found_ids)
 
 
@@ -551,6 +552,7 @@ def scan_agents(conn) -> int:
         found_ids.add(final_id)
 
     _prune(conn, kind="agent", origin="user-authored", keep=found_ids | protected, exclude_states=("vaulted",))
+    conn.commit()
     return len(found_ids)
 
 
@@ -683,6 +685,7 @@ def scan_plugin_skills(conn) -> int:
                     found_ids.add(node_id)
 
     _prune(conn, kind="skill", origin="plugin", keep=found_ids)
+    conn.commit()
     return len(found_ids)
 
 
@@ -740,4 +743,5 @@ def scan_vaulted(conn) -> int:
 
         _prune(conn, kind=node_kind, origin="user-authored", keep=found_ids, state="vaulted")
 
+    conn.commit()
     return count
