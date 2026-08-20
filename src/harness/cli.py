@@ -222,7 +222,21 @@ def _cmd_deactivate(conn, args) -> int:
 
 
 def _cmd_learned(conn, args) -> int:
-    print(memory_mod.render(memory_mod.suggestions(conn)))
+    project = memory_mod.current_project() if args.here else None
+    if project:
+        print(f"scoped to this project ({project})\n")
+    print(memory_mod.render(memory_mod.suggestions(conn, project=project)))
+
+    if args.projects:
+        print("\nwhat each project leans on:")
+        for name, top in sorted(
+            memory_mod.by_project(conn).items(),
+            key=lambda kv: -sum(c for _, c in kv[1]),
+        )[:8]:
+            used = ", ".join(f"{n} ({c})" for n, c in top)
+            print(f"  {name[:40]:40s} {used}")
+        print("\nHow a tool is configured per project belongs in that project's")
+        print("CLAUDE.md -- this only knows what you use where.")
     return 0
 
 
@@ -375,7 +389,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("name")
 
     add("doctor", "check the vault and installation for drift", _cmd_doctor)
-    add("learned", "what usage has taught the harness about itself", _cmd_learned)
+    p = add("learned", "what usage has taught the harness about itself", _cmd_learned)
+    p.add_argument("--here", action="store_true", help="only this project's signal")
+    p.add_argument("--projects", action="store_true", help="what each project leans on")
 
     p = add("vault", "shelve never-invoked capabilities", _cmd_vault)
     p.add_argument("--apply", action="store_true", help="perform it (default is a dry run)")

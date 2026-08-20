@@ -44,6 +44,7 @@ import sqlite3
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 
 # A relevance SCORE cannot tell a good answer from a bad one here, and the
 # first version of this file assumed it could. Measured against the real index:
@@ -83,7 +84,20 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def current_project() -> str:
+    """The project this command is running in, keyed the way Claude Code keys
+    its transcript directories, so harness's own events and mined invocations
+    land in the same namespace.
+
+    One machine's projects are not interchangeable: on this corpus `homelab`
+    leans hard on code-reviewer (65 uses) while `api-service` barely touches
+    it. Averaging them produces a picture that is true of no project.
+    """
+    return "-" + str(Path.cwd()).replace("/", "-").lstrip("-")
+
+
 def _record(conn: sqlite3.Connection, kind: str, node_id: str | None, payload: dict) -> None:
+    payload = {**payload, "project": current_project()}
     conn.execute(
         "INSERT INTO events (ts, kind, node_id, payload) VALUES (?, ?, ?, ?)",
         (_now(), kind, node_id, json.dumps(payload, ensure_ascii=False)),
@@ -148,8 +162,35 @@ def _decayed(rows: list[str], now: datetime) -> float:
     return total
 
 
-def suggestions(conn: sqlite3.Connection, *, now: datetime | None = None) -> list[Suggestion]:
-    """What the usage record implies. Reports only; changes nothing."""
+def by_project(conn: sqlite3.Connection, limit: int = 6) -> dict[str, list[tuple[str, int]]]:
+    """Which capabilities each project actually leans on.
+
+    Read from the mined `invocation` events, which carry the project they
+    happened in. This is the "what do I use *here*" half of a second brain;
+    the "how is it configured here" half belongs in that project's own
+    CLAUDE.md, not in this database.
+    """
+    counts: dict[str, Counter] = defaultdict(Counter)
+    for row in conn.execute("SELECT node_id, payload FROM events WHERE kind = 'invocation'"):
+        try:
+            data = json.loads(row["payload"] or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict):
+            continue  # older rows stored a bare name string
+        project, name = data.get("project"), data.get("name")
+        if project and name:
+            counts[project][name] += 1
+    return {p: c.most_common(limit) for p, c in counts.items()}
+
+
+def suggestions(conn: sqlite3.Connection, *, now: datetime | None = None,
+                project: str | None = None) -> list[Suggestion]:
+    """What the usage record implies. Reports only; changes nothing.
+
+    `project` narrows every signal to one project, so a gap in one codebase is
+    not diluted by unrelated work in another.
+    """
     reference = now or datetime.now(timezone.utc)
     out: list[Suggestion] = []
 
@@ -164,6 +205,8 @@ def suggestions(conn: sqlite3.Connection, *, now: datetime | None = None) -> lis
             data = json.loads(row["payload"] or "{}")
         except json.JSONDecodeError:
             data = {}
+        if project and data.get("project") != project:
+            continue
         if data.get("was") != "vaulted":
             continue
         pulled[row["node_id"]].append(row["ts"])
@@ -186,9 +229,12 @@ def suggestions(conn: sqlite3.Connection, *, now: datetime | None = None) -> lis
     misses = Counter()
     for row in conn.execute("SELECT payload FROM events WHERE kind = 'miss'"):
         try:
-            query = json.loads(row["payload"] or "{}").get("query")
+            data = json.loads(row["payload"] or "{}")
         except json.JSONDecodeError:
             continue
+        if project and data.get("project") != project:
+            continue
+        query = data.get("query")
         if query:
             misses[query.strip().lower()] += 1
 
@@ -202,9 +248,12 @@ def suggestions(conn: sqlite3.Connection, *, now: datetime | None = None) -> lis
     helped: set[str] = set()
     for row in conn.execute("SELECT ts, payload FROM events WHERE kind = 'lookup'"):
         try:
-            query = (json.loads(row["payload"] or "{}").get("query") or "").strip().lower()
+            data = json.loads(row["payload"] or "{}")
         except json.JSONDecodeError:
             continue
+        if project and data.get("project") != project:
+            continue
+        query = (data.get("query") or "").strip().lower()
         if not query:
             continue
         asked[query] += 1

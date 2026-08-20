@@ -84,7 +84,7 @@ def mine(conn) -> MineResult:
     # see the module docstring on why the delete and the repopulate must be
     # one transaction rather than interleaved with the file scan.
     usage_acc: dict[str, dict] = {}
-    event_rows: list[tuple[str, str, str]] = []
+    event_rows: list[tuple[str, str, str, str]] = []
 
     for path in _transcript_paths():
         transcripts += 1
@@ -126,6 +126,12 @@ def mine(conn) -> MineResult:
             continue
 
         session_id = str(path)
+        # Claude Code stores each project's transcripts under a directory named
+        # after its path, so the project a capability was used in is already
+        # encoded in the corpus -- it just has to be carried through. Without
+        # it, one machine's very different projects average into a single
+        # meaningless usage picture.
+        project = _project_of(path)
         for obj in parsed:
             for kind_hint, name, ts in _invocations_in(obj):
                 invocations += 1
@@ -149,7 +155,7 @@ def mine(conn) -> MineResult:
                 acc["sessions"].add(session_id)
                 if ts and ts > acc["last_used"]:
                     acc["last_used"] = ts
-                event_rows.append((ts, node_id, name))
+                event_rows.append((ts, node_id, name, project))
 
     # Rebuild the cache: delete then repopulate, inside the connection's
     # existing transaction, one commit at the end. Never insert a usage row
@@ -164,10 +170,10 @@ def mine(conn) -> MineResult:
             "VALUES (?, ?, ?, ?)",
             (node_id, acc["invocations"], len(acc["sessions"]), acc["last_used"] or None),
         )
-    for ts, node_id, name in event_rows:
+    for ts, node_id, name, project in event_rows:
         conn.execute(
             "INSERT INTO events (ts, kind, node_id, payload) VALUES (?, 'invocation', ?, ?)",
-            (ts, node_id, name),
+            (ts, node_id, json.dumps({"name": name, "project": project})),
         )
     conn.commit()
 
@@ -190,6 +196,19 @@ def _transcript_paths():
     can each carry tool_use invocations, so both are walked.
     """
     return sorted(paths.projects_dir().rglob("*.jsonl"))
+
+
+def _project_of(path) -> str:
+    """The project directory a transcript belongs to.
+
+    `~/.claude/projects/-Users-you-Documents-Code-homelab/<session>.jsonl` belongs
+    to the homelab project; subagent transcripts sit one level deeper, so walk up
+    until the parent is `projects/` itself.
+    """
+    current = path.parent
+    while current.name in ("subagents",) and current.parent != current:
+        current = current.parent
+    return current.name
 
 
 def _installed_names(conn):
