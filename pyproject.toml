@@ -1,0 +1,16 @@
+[project]
+name = "harness"
+version = "0.2.0"
+description = "Inventory and search your Claude Code harness."
+requires-python = ">=3.11"
+dependencies = ["pyyaml"]
+
+[project.scripts]
+harness = "harness.cli:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/harness"]
