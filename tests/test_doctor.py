@@ -348,3 +348,39 @@ def test_render_separates_errors_from_warnings(fake_home):
     text = doctor.render(report)
     assert "1 error(s)" in text
     assert "1 warning(s)" in text
+
+
+def test_a_vaulted_entry_that_is_also_a_real_file_on_the_load_path_is_reported(fake_home):
+    """Restoring a vault by hand leaves the manifest claiming the capability is
+    shelved while it is actually loaded -- found on the real machine, 63 times."""
+    from harness import db, doctor, vault
+
+    conn = db.connect()
+    src = fake_home / "skills" / "alpha"
+    src.mkdir(parents=True)
+    (src / "SKILL.md").write_text("---\nname: alpha\ndescription: x.\n---\n\nBody.\n")
+    vault.stash(src, "skills")
+
+    # Put it back by copying, the way a hand restore would.
+    src.mkdir(parents=True, exist_ok=True)
+    (src / "SKILL.md").write_text("---\nname: alpha\ndescription: x.\n---\n\nBody.\n")
+
+    report = doctor.inspect(conn)
+    hits = [f for f in report.findings if f.check == "shelved-but-loaded"]
+    assert hits, "a capability both vaulted and loaded must be reported"
+    assert "alpha" in hits[0].message
+
+
+def test_a_restored_symlink_is_not_reported_as_shelved_but_loaded(fake_home):
+    """A symlink is a restore, which another check owns -- do not cry wolf."""
+    from harness import db, doctor, vault
+
+    conn = db.connect()
+    src = fake_home / "skills" / "beta"
+    src.mkdir(parents=True)
+    (src / "SKILL.md").write_text("---\nname: beta\ndescription: x.\n---\n\nBody.\n")
+    vault.stash(src, "skills")
+    vault.restore("beta", "skills")
+
+    report = doctor.inspect(conn)
+    assert not [f for f in report.findings if f.check == "shelved-but-loaded"]

@@ -51,7 +51,10 @@ def _cmd_mine(conn, args) -> int:
     # Degrade and report: an operator told "905 invocations" needs to know what
     # was dropped to get there.
     if r.unmatched:
-        print(f"  {r.unmatched} names did not match any installed capability")
+        shown = ", ".join(r.unmatched_names[:6])
+        more = f" (+{r.unmatched - 6} more)" if r.unmatched > 6 else ""
+        print(f"  {r.unmatched} distinct name(s) matched no installed capability: {shown}{more}")
+        print("    built-in agent types (general-purpose, Explore, fork) are expected here")
     if r.malformed:
         print(f"  {r.malformed} malformed line(s) skipped")
     if r.unreadable:
@@ -167,7 +170,10 @@ def _cmd_deactivate(conn, args) -> int:
 def _cmd_doctor(conn, args) -> int:
     report = doctor_mod.inspect(conn)
     print(doctor_mod.render(report))
-    return 1 if getattr(report, "problems", lambda: [])() else 0
+    # Exit non-zero on any error-severity finding. An earlier version probed for
+    # a `problems()` method the Report does not have, so getattr's default fired
+    # every time and doctor reported success while printing two errors.
+    return 1 if any(f.severity == "error" for f in report.findings) else 0
 
 
 def _cmd_vault(conn, args) -> int:

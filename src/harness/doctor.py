@@ -181,6 +181,38 @@ def _inspect_restored_entries(report: Report, data: dict) -> None:
                 )
 
 
+def _inspect_shelved_but_loaded(report: Report, data: dict) -> None:
+    """A manifest entry that is ALSO a real file on the load path.
+
+    Stashing moves the file, so normal operation cannot produce this -- but
+    restoring a vault by hand (copying the files back rather than using
+    `harness activate`) leaves the manifest untouched and the capability
+    loaded. Found on the real machine after exactly that: 63 entries the
+    graph called shelved while every one of them sat in ~/.claude/skills.
+
+    Worth an error rather than a warning because it makes two other outputs
+    lie: `audit` omits the capability from the always-loaded total though it
+    is loaded, and `lookup` tells the operator to activate something already
+    active. Deliberately does NOT fire for a symlink -- that is a restore,
+    which `_inspect_restored_entries` owns.
+    """
+    for kind in vault.KINDS:
+        for key, entry in data.get(kind, {}).items():
+            live = _entry_live_path(key, kind)
+            if live.is_symlink() or not live.exists():
+                continue
+            _add(
+                report,
+                "error",
+                "shelved-but-loaded",
+                f"{kind}/{key} is in the vault manifest but {live} is a real file on the load path "
+                "-- it is being loaded while the graph reports it shelved",
+                f"if you restored it by hand, drop it from the vault so the graph agrees: "
+                f"`harness activate {key}` then `harness deactivate {key}`, or remove the vault "
+                "entry and re-run `harness scan`",
+            )
+
+
 # ---------------------------------------------------------------------------
 # Graph cross-checks
 # ---------------------------------------------------------------------------
@@ -362,6 +394,7 @@ def inspect(conn) -> Report:
         if data is not None:
             _inspect_manifest_vs_disk(report, data)
             _inspect_restored_entries(report, data)
+            _inspect_shelved_but_loaded(report, data)
             _inspect_vaulted_without_node(report, conn, data)
 
     _inspect_stale_promoted_symlinks(report, conn)

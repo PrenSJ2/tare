@@ -62,10 +62,11 @@ _AGENT_TOOL_NAMES = ("Agent", "Task")
 class MineResult:
     transcripts: int
     invocations: int
-    unmatched: int  # names that matched no installed capability
+    unmatched: int  # DISTINCT names that matched no installed capability
     malformed: int  # lines that were not valid JSON
     unreadable: int  # files that could not be opened at all
     excluded: int  # harness's own tagging exhaust
+    unmatched_names: tuple = ()  # the distinct names themselves, for reporting
 
 
 def mine(conn) -> MineResult:
@@ -74,7 +75,7 @@ def mine(conn) -> MineResult:
 
     transcripts = 0
     invocations = 0
-    unmatched = 0
+    unmatched_names: set[str] = set()
     malformed = 0
     unreadable = 0
     excluded = 0
@@ -131,9 +132,15 @@ def mine(conn) -> MineResult:
                 node_id = (skill_ids if kind_hint == "skill" else agent_ids).get(name)
                 if node_id is None:
                     # Matches nothing currently installed -- reported, not
-                    # dropped, because the capability may simply have been
-                    # uninstalled since this session ran.
-                    unmatched += 1
+                    # dropped, because the capability may have been uninstalled
+                    # since, or be a BUILT-IN agent type (general-purpose,
+                    # Explore, fork) which is not a ~/.claude capability at all.
+                    #
+                    # Counted as DISTINCT names, not occurrences: the real
+                    # corpus reports 844 occurrences of about six built-in
+                    # names, and printing 844 reads as a matching failure
+                    # rather than the handful of expected names it really is.
+                    unmatched_names.add(name)
                     continue
                 acc = usage_acc.setdefault(
                     node_id, {"invocations": 0, "sessions": set(), "last_used": ""}
@@ -167,7 +174,8 @@ def mine(conn) -> MineResult:
     return MineResult(
         transcripts=transcripts,
         invocations=invocations,
-        unmatched=unmatched,
+        unmatched=len(unmatched_names),
+        unmatched_names=tuple(sorted(unmatched_names)),
         malformed=malformed,
         unreadable=unreadable,
         excluded=excluded,
@@ -186,14 +194,34 @@ def _transcript_paths():
 
 def _installed_names(conn):
     """name -> node id, split by kind so a skill and an agent that happen to
-    share a name can never cross-match each other's invocations."""
+    share a name can never cross-match each other's invocations.
+
+    A plugin skill is invoked in transcripts by its QUALIFIED name --
+    `superpowers:brainstorming` -- while the graph stores the leaf name
+    (`brainstorming`) with the plugin recorded separately. Matching only the
+    bare name silently loses every plugin invocation, which on the real corpus
+    meant 10 usage rows instead of 35 and dropped the eight most-used
+    capabilities in the configuration. Since `shelve`'s protection guard seeds
+    from used nodes, losing them makes it under-protect exactly the suites that
+    are used most.
+
+    So each plugin skill is registered under both its leaf name and
+    `<plugin>:<leaf>`. The qualified form is registered first and never
+    overwritten, so it wins over a same-named user skill; the bare form uses
+    setdefault, so a user-authored capability keeps the unqualified name.
+    """
     skill_ids: dict[str, str] = {}
     agent_ids: dict[str, str] = {}
-    for row in conn.execute("SELECT id, kind, name FROM nodes"):
-        if row["kind"] == "skill":
-            skill_ids.setdefault(row["name"], row["id"])
-        elif row["kind"] == "agent":
-            agent_ids.setdefault(row["name"], row["id"])
+    rows = conn.execute("SELECT id, kind, name, provider_plugin, origin FROM nodes").fetchall()
+
+    for row in rows:
+        if row["kind"] == "skill" and row["provider_plugin"]:
+            skill_ids[f"{row['provider_plugin']}:{row['name']}"] = row["id"]
+
+    for row in rows:
+        target = skill_ids if row["kind"] == "skill" else agent_ids if row["kind"] == "agent" else None
+        if target is not None:
+            target.setdefault(row["name"], row["id"])
     return skill_ids, agent_ids
 
 
