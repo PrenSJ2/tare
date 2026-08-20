@@ -74,12 +74,15 @@ loads normally again. `harness deactivate <name-or-id>` reverses a restore.
 
 ## Everything else
 
-`harness scan`, `harness mine`, `harness tag`, `harness build`, `harness
-audit`, and `harness graph` maintain the underlying inventory; `harness
-doctor` checks it for drift; `harness vault` inspects the vault store
-directly. `harness install` / `harness uninstall` manage this skill and its
-hook. `harness hookline` is what Claude Code itself runs at session start --
-it is not meant to be invoked by hand.
+`harness scan`, `harness mine`, `harness tag` and `harness build` maintain the
+underlying inventory; `harness audit` reports what the always-loaded context
+costs; `harness doctor` checks for drift; `harness vault` shelves never-invoked
+capabilities (dry run by default, `--apply` performs it). `harness install` /
+`harness uninstall` manage this skill and its hook. `harness hookline` is what
+Claude Code runs at session start -- not meant to be invoked by hand.
+
+Every command named on this page exists. If one is missing, the skill is stale:
+re-run `harness install`.
 """
 
 

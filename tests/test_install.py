@@ -361,3 +361,32 @@ def test_save_propagates_write_failures(fake_home, monkeypatch):
     monkeypatch.setattr("harness.install.tempfile.mkstemp", boom)
     with pytest.raises(OSError):
         install._save({"a": 1})
+
+
+def test_the_skill_only_names_commands_that_exist(fake_home, capsys):
+    """The skill is the one artifact the vault gate exists to guarantee.
+
+    A previous build shipped it advertising `harness list`, which was never a
+    subcommand, and the rebuild reintroduced `harness graph`. Both times the
+    file telling Claude how to reach ~60 shelved capabilities named a command
+    that exits 2.
+    """
+    import re
+
+    from harness import cli, install
+
+    named = set(re.findall(r"`harness ([a-z-]+)", install._SKILL_BODY))
+    assert named, "the skill should name some commands"
+
+    missing = []
+    for name in sorted(named):
+        try:
+            cli.main([name, "--help"])
+        except SystemExit as exc:
+            # argparse exits 0 after printing help for a real command, and 2
+            # when the command itself is unrecognised.
+            if exc.code not in (0, None):
+                missing.append(name)
+        capsys.readouterr()
+
+    assert not missing, f"skill names commands that do not exist: {missing}"

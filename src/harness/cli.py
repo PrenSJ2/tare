@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections import Counter
 
 from . import (
     activate as activate_mod,
@@ -120,16 +121,53 @@ def _cmd_uninstall(conn, args) -> int:
 
 
 def _cmd_hookline(conn, args) -> int:
-    """One line injected at SessionStart.
+    """Injected into every session at SessionStart.
 
-    Wrapped in a bare except on purpose: this runs uninvited inside every
-    session, so a traceback here would land in the operator's work. Silence is
-    the correct failure mode for this command and this command only.
+    A bare count ("64 capabilities are shelved") is too passive to act on: it
+    says something exists without saying what, so the reader has no reason to
+    look. This emits the SHAPE of what is hidden -- the domains, drawn from the
+    shelved capabilities' own tags -- plus the two commands. Knowing that
+    "rust, terraform, security auditing" are behind the curtain is what makes
+    someone check before concluding nothing covers a task.
+
+    It is kept to a few dozen tokens on purpose. This runs on every turn of
+    every session, and the whole point of the vault was to get ~9,600 tokens
+    per turn back; spending a hundred of them to make the rest reachable is a
+    good trade, spending a thousand is not.
+
+    Wrapped in a bare except: this runs uninvited inside the operator's
+    session, so a traceback here would land in their work. Silence is the
+    correct failure mode for this command and this command only.
     """
     try:
-        n = conn.execute("SELECT COUNT(*) c FROM nodes WHERE state='vaulted'").fetchone()["c"]
-        if n:
-            print(f"{n} capabilities are shelved and unlisted. Use the harness skill to find them.")
+        rows = conn.execute(
+            "SELECT kind, tags FROM nodes WHERE state = 'vaulted'"
+        ).fetchall()
+        if not rows:
+            return 0
+
+        kinds = Counter(r["kind"] for r in rows)
+        shape = ", ".join(f"{n} {k}s" for k, n in sorted(kinds.items()))
+
+        tags = Counter(
+            tag.strip()
+            for row in rows
+            for tag in (row["tags"] or "").split(",")
+            if tag.strip()
+        )
+        domains = ", ".join(tag for tag, _ in tags.most_common(12))
+
+        print(
+            f"harness: {len(rows)} capabilities ({shape}) are shelved and are NOT "
+            f"listed anywhere in this context."
+        )
+        if domains:
+            print(f"They cover: {domains}.")
+        print(
+            "Before concluding that no skill or subagent exists for a task, run "
+            '`harness lookup "<what you need>"`. Bring one back with '
+            "`harness activate <name>` -- it stays available for the rest of the session."
+        )
     except Exception:
         pass
     return 0
