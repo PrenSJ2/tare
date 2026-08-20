@@ -270,24 +270,35 @@ def _prune(conn, *, kind: str, origin: str, keep: set[str], state: str | None = 
 
 def _classify_skill_symlink(entry: Path) -> dict:
     """Classify a symlink living directly in `skills_dir()`. Four cases,
-    unambiguous (rule 4):
+    unambiguous (rule 4) -- and classified by resolved TARGET LOCATION
+    FIRST, existence checked only afterward. `resolve(strict=False)`
+    returns the theoretical target even when nothing is there, so a
+    promoted skill whose plugin version directory was removed by
+    `/plugin update` still resolves into the cache and must keep its
+    plugin-scoped id (and usage rows) -- losing it here is the promote ->
+    shelve loop again, just triggered by a missing target instead of a
+    wrong id derivation. Same reasoning for a dangling restore into the
+    vault: it stays 'user-authored'. Only a link that resolves outside
+    both roots -- dangling or not -- is 'external-tool'.
 
-      1. dangling                        -> emit anyway, parse_error set.
-         Never let it vanish -- it is evidence something is broken, not
-         nothing to report.
-      2. resolves into plugins_cache_dir -> promoted; plugin-scoped id, so
-         its usage rows survive. Getting this wrong causes a promote ->
-         shelve -> promote loop (the design notes).
-      3. resolves into vault_dir         -> restored; origin='user-authored',
+      1. resolves into plugins_cache_dir -> promoted; plugin-scoped id, so
+         its usage rows survive.
+      2. resolves into vault_dir         -> restored; origin='user-authored',
          not external-tool -- it is a live capability again.
-      4. anything else                   -> external-tool (agent-browser,
+      3. anything else                   -> external-tool (agent-browser,
          find-skills are real examples on this machine and must keep
          classifying this way).
+      4. target does not exist (any of the above) -> still emit the node
+         from case 1-3's classification, just with parse_error='dangling
+         symlink' and no readable content. Never let it vanish.
     """
     resolved, exists = _resolve_link(entry)
     fs_name = entry.name
 
-    if resolved is None or not exists:
+    if resolved is None:
+        # Symlink loop -- resolution itself failed, so there is no target
+        # path to classify by at all. Distinct from "dangling", which still
+        # has a (non-existent) target location to attribute.
         return {
             "id": f"skill:{fs_name}",
             "name": fs_name,
@@ -295,16 +306,15 @@ def _classify_skill_symlink(entry: Path) -> dict:
             "desc_raw": "",
             "est_tokens": 0,
             "clear_derived": True,
-            "parse_error": "dangling symlink",
+            "parse_error": "broken symlink (resolution failed)",
         }
 
     if _is_within(resolved, _cache_root()):
-        return _promoted_skill_node(entry, resolved)
-
-    if _is_within(resolved, _vault_root()):
+        info = _promoted_skill_node(entry, resolved)
+    elif _is_within(resolved, _vault_root()):
         fm, tokens, err = _load(resolved / "SKILL.md")
         name, desc = _name_and_desc(fm, fs_name)
-        return {
+        info = {
             "id": f"skill:{name}",
             "name": name,
             "origin": "user-authored",
@@ -313,18 +323,22 @@ def _classify_skill_symlink(entry: Path) -> dict:
             "clear_derived": fm is None,
             "parse_error": err,
         }
+    else:
+        fm, tokens, err = _load(resolved / "SKILL.md")
+        name, desc = _name_and_desc(fm, fs_name)
+        info = {
+            "id": f"skill:{name}",
+            "name": name,
+            "origin": "external-tool",
+            "desc_raw": desc,
+            "est_tokens": tokens,
+            "clear_derived": fm is None,
+            "parse_error": err,
+        }
 
-    fm, tokens, err = _load(resolved / "SKILL.md")
-    name, desc = _name_and_desc(fm, fs_name)
-    return {
-        "id": f"skill:{name}",
-        "name": name,
-        "origin": "external-tool",
-        "desc_raw": desc,
-        "est_tokens": tokens,
-        "clear_derived": fm is None,
-        "parse_error": err,
-    }
+    if not exists:
+        info = {**info, "clear_derived": True, "desc_raw": "", "est_tokens": 0, "parse_error": "dangling symlink"}
+    return info
 
 
 def _promoted_skill_node(entry: Path, resolved: Path) -> dict:
@@ -334,19 +348,29 @@ def _promoted_skill_node(entry: Path, resolved: Path) -> dict:
     that id from the marketplace/plugin path components rather than
     inventing a fresh one -- a fresh id here is exactly the promote ->
     shelve-because-unused -> promote loop the notes describe.
+
+    The real cache layout, confirmed against the pre-loss golden database,
+    is `<marketplace>/<plugin>/<version>/skills/<relpath>` -- e.g.
+    `ExampleMarket/toolkit/0.1.0/skills/asset/SKILL.md`. `version` (often
+    semver, sometimes the literal string "unknown") and the `skills`
+    segment both have to be stripped: the id is `skill:<plugin>@
+    <marketplace>:<relpath>`, not `skill:<plugin>@<marketplace>:
+    <version>/skills/<relpath>` -- the version is not part of a plugin's
+    identity here (there is no version column in `nodes` at all), it is
+    just an artifact of how the cache is laid out on disk.
     """
     try:
         rel_parts = resolved.relative_to(_cache_root()).parts
     except ValueError:
         rel_parts = ()
 
-    if len(rel_parts) < 3:
-        # Too shallow to contain marketplace/plugin/relpath -- can't
-        # attribute it, so fall back to external-tool rather than emit a
-        # malformed plugin-scoped id.
+    if len(rel_parts) < 5 or rel_parts[3] != "skills":
+        # Too shallow, or doesn't match <marketplace>/<plugin>/<version>/
+        # skills/<relpath> -- can't attribute it, so fall back to
+        # external-tool rather than emit a malformed plugin-scoped id.
         fm, tokens, err = _load(resolved / "SKILL.md")
         name, desc = _name_and_desc(fm, entry.name)
-        note = "symlink resolves into plugins cache but path is too shallow to attribute"
+        note = "symlink resolves into plugins cache but path does not match <marketplace>/<plugin>/<version>/skills/<relpath>"
         return {
             "id": f"skill:{name}",
             "name": name,
@@ -357,7 +381,7 @@ def _promoted_skill_node(entry: Path, resolved: Path) -> dict:
             "parse_error": f"{err}; {note}" if err else note,
         }
 
-    marketplace, plugin, *rest = rel_parts
+    marketplace, plugin, _version, _skills, *rest = rel_parts
     relpath = "/".join(rest)
     fm, tokens, err = _load(resolved / "SKILL.md")
     name, desc = _name_and_desc(fm, entry.name)
@@ -377,12 +401,14 @@ def _promoted_skill_node(entry: Path, resolved: Path) -> dict:
 def _classify_agent_symlink(entry: Path) -> dict:
     """Same classification as `_classify_skill_symlink`, minus the promoted
     case: there is no plugin-scoped id shape for agents in this system, so
-    a symlink into the plugin cache falls through to external-tool.
+    a symlink into the plugin cache falls through to external-tool. Same
+    target-location-first, existence-checked-after ordering (rule 4): a
+    dangling restore into the vault must still read 'user-authored'.
     """
     resolved, exists = _resolve_link(entry)
     fs_name = entry.stem
 
-    if resolved is None or not exists:
+    if resolved is None:
         return {
             "id": f"agent:{fs_name}",
             "name": fs_name,
@@ -390,13 +416,13 @@ def _classify_agent_symlink(entry: Path) -> dict:
             "desc_raw": "",
             "est_tokens": 0,
             "clear_derived": True,
-            "parse_error": "dangling symlink",
+            "parse_error": "broken symlink (resolution failed)",
         }
 
     origin = "user-authored" if _is_within(resolved, _vault_root()) else "external-tool"
     fm, tokens, err = _load(resolved)
     name, desc = _name_and_desc(fm, fs_name)
-    return {
+    info = {
         "id": f"agent:{name}",
         "name": name,
         "origin": origin,
@@ -405,6 +431,10 @@ def _classify_agent_symlink(entry: Path) -> dict:
         "clear_derived": fm is None,
         "parse_error": err,
     }
+
+    if not exists:
+        info = {**info, "clear_derived": True, "desc_raw": "", "est_tokens": 0, "parse_error": "dangling symlink"}
+    return info
 
 
 # ---------------------------------------------------------------------------
@@ -453,7 +483,7 @@ def scan_user_skills(conn) -> int:
             id=final_id,
             kind="skill",
             name=info["name"],
-            path=entry,
+            path=entry / "SKILL.md",  # path is always the frontmatter-bearing file, never the directory
             origin=info["origin"],
             state="live",
             provider_plugin=info.get("provider_plugin"),
@@ -529,20 +559,53 @@ def scan_agents(conn) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _plugin_skill_dirs(plugin_dir: Path) -> list[Path]:
-    """Every skill directory under a plugin, however deep.
+def _plugin_skill_dirs(skills_root: Path) -> list[Path]:
+    """Every skill directory under a plugin version's `skills/` root,
+    however deep.
 
     Must use `rglob`, not a shallow glob: a plain `*/SKILL.md` missed 22 of
     113 real plugin skills nested arbitrarily deep (e.g.
-    `swmansion/skills/0.1.0/skills/detour/migrate-to-detour/`). But a bare
+    `swmansion/skills/0.1.0/skills/detour/migrate-to-detour/`, i.e.
+    `detour/migrate-to-detour` under that plugin's `skills/`). But a bare
     rglob then over-corrects and also picks up SKILL.md files that are
     really reference *documents* belonging to another skill (13 of those on
     the same corpus, under paths like `references/*/SKILL.md`). A directory
     only counts as a genuine skill if no *other* skill directory found here
     is one of its ancestors (rule 7).
     """
-    all_dirs = sorted({p.parent for p in plugin_dir.rglob("SKILL.md")})
+    all_dirs = sorted({p.parent for p in skills_root.rglob("SKILL.md")})
     return [d for d in all_dirs if not any(other != d and other in d.parents for other in all_dirs)]
+
+
+def _version_key(version: str) -> tuple:
+    """Sort key for a plugin's version directory names. Dotted numeric
+    components compare numerically -- plain string sort would rank "0.10.0"
+    below "0.9.0" -- and a non-numeric component (the literal "unknown",
+    used when a plugin ships without version metadata) sorts after any
+    numeric one at the same position, so a real version always wins over
+    "unknown" if both are somehow present.
+    """
+    return tuple((0, int(part)) if part.isdigit() else (1, part) for part in version.split("."))
+
+
+def _plugin_skills_root(plugin_dir: Path) -> Path | None:
+    """Which version directory's `skills/` to scan for this plugin.
+
+    Real layout (confirmed against the pre-loss golden database):
+    `<plugin_dir>/<version>/skills/...`. `version` is usually semver but
+    can be the literal string "unknown". A plugin can have more than one
+    version directory present at once (e.g. left behind by `/plugin
+    update`); only the highest-versioned one with a `skills/` subdirectory
+    is scanned -- the id shape has no version component, so scanning more
+    than one would either double-count identical relpaths under a single
+    id (last-write-wins, silently dropping one) or require inventing an id
+    shape nothing else in this system expects. Older version directories
+    are simply ignored, not merged.
+    """
+    candidates = [d for d in plugin_dir.iterdir() if d.is_dir() and (d / "skills").is_dir()]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda d: _version_key(d.name)) / "skills"
 
 
 def _enabled_plugins() -> dict:
@@ -588,8 +651,12 @@ def scan_plugin_skills(conn) -> int:
             marketplace = marketplace_dir.name
             for plugin_dir in sorted(p for p in marketplace_dir.iterdir() if p.is_dir()):
                 plugin = plugin_dir.name
-                for skill_dir in _plugin_skill_dirs(plugin_dir):
-                    relpath = skill_dir.relative_to(plugin_dir).as_posix()
+                skills_root = _plugin_skills_root(plugin_dir)
+                if skills_root is None:
+                    continue
+
+                for skill_dir in _plugin_skill_dirs(skills_root):
+                    relpath = skill_dir.relative_to(skills_root).as_posix()
                     node_id = f"skill:{plugin}@{marketplace}:{relpath}"
                     if node_id in claimed:
                         continue  # rule 6
@@ -603,7 +670,7 @@ def scan_plugin_skills(conn) -> int:
                         id=node_id,
                         kind="skill",
                         name=name,
-                        path=skill_dir,
+                        path=skill_dir / "SKILL.md",
                         origin="plugin",
                         state=state,
                         provider_plugin=plugin,
@@ -660,7 +727,7 @@ def scan_vaulted(conn) -> int:
                 id=node_id,
                 kind=node_kind,
                 name=name,
-                path=vault._vault_entry_path(key, kind),
+                path=source,  # the frontmatter-bearing file itself, matching every other scanner's convention
                 origin="user-authored",
                 state="vaulted",
                 desc_raw=desc,

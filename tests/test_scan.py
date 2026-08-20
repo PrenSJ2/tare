@@ -37,8 +37,16 @@ def make_agent(base: Path, filename: str, *, frontmatter_name: str | None = None
     return p
 
 
-def make_plugin_skill(base: Path, marketplace: str, plugin: str, relpath: str, *, name: str | None = None) -> Path:
-    d = base / "plugins" / "cache" / marketplace / plugin / relpath
+def make_plugin_skill(
+    base: Path, marketplace: str, plugin: str, relpath: str, *, name: str | None = None, version: str = "1.0.0"
+) -> Path:
+    """Build a plugin skill at the REAL cache layout, confirmed against the
+    pre-loss golden database: `<marketplace>/<plugin>/<version>/skills/
+    <relpath>/SKILL.md` -- e.g.
+    `ExampleMarket/toolkit/0.1.0/skills/asset/SKILL.md`. `relpath` is
+    relative to that `skills/` directory, not to the plugin directory.
+    """
+    d = base / "plugins" / "cache" / marketplace / plugin / version / "skills" / relpath
     d.mkdir(parents=True)
     fm_name = name if name is not None else Path(relpath).name
     (d / "SKILL.md").write_text(f"---\nname: {fm_name}\ndescription: A plugin skill.\n---\n\nBody\n")
@@ -311,7 +319,8 @@ def test_protected_ids_match_vaulted_node_ids_exactly(fake_home):
 def test_symlink_promoted_from_plugin_cache_keeps_plugin_scoped_id(fake_home):
     make_plugin_skill(fake_home, "anthropics", "superpowers", "brainstorming", name="brainstorming")
     (fake_home / "skills" / "brainstorming").symlink_to(
-        fake_home / "plugins" / "cache" / "anthropics" / "superpowers" / "brainstorming", target_is_directory=True
+        fake_home / "plugins" / "cache" / "anthropics" / "superpowers" / "1.0.0" / "skills" / "brainstorming",
+        target_is_directory=True,
     )
     conn = db.connect()
     scan.scan_user_skills(conn)
@@ -331,7 +340,8 @@ def test_promote_shelve_promote_loop_does_not_recur(fake_home):
     """
     make_plugin_skill(fake_home, "anthropics", "superpowers", "brainstorming", name="brainstorming")
     (fake_home / "skills" / "brainstorming").symlink_to(
-        fake_home / "plugins" / "cache" / "anthropics" / "superpowers" / "brainstorming", target_is_directory=True
+        fake_home / "plugins" / "cache" / "anthropics" / "superpowers" / "1.0.0" / "skills" / "brainstorming",
+        target_is_directory=True,
     )
     paths.settings_path().write_text(json.dumps({"enabledPlugins": {"superpowers@anthropics": False}}))
 
@@ -378,7 +388,51 @@ def test_symlink_dangling_still_emits_a_node(fake_home):
     conn.commit()
     got = nodes(conn)
     assert "skill:gone" in got
+    assert got["skill:gone"]["origin"] == "external-tool"
     assert got["skill:gone"]["parse_error"] == "dangling symlink"
+
+
+def test_dangling_promoted_symlink_keeps_plugin_scoped_id(fake_home):
+    """A promoted skill's plugin version directory can be removed later by
+    `/plugin update` -- the symlink in skills_dir() then dangles, but
+    `resolve(strict=False)` still reports the theoretical target inside the
+    plugin cache, so classification must run BEFORE the existence check
+    (rule 4 correction). Losing the plugin-scoped id here is the promote ->
+    shelve loop again, just triggered by a missing target.
+    """
+    target = fake_home / "plugins" / "cache" / "anthropics" / "superpowers" / "1.0.0" / "skills" / "brainstorming"
+    (fake_home / "skills" / "brainstorming").symlink_to(target, target_is_directory=True)
+    # target never created -- dangling from the start
+    conn = db.connect()
+    scan.scan_user_skills(conn)
+    conn.commit()
+    got = nodes(conn)
+    assert "skill:superpowers@anthropics:brainstorming" in got
+    row = got["skill:superpowers@anthropics:brainstorming"]
+    assert row["origin"] == "user-authored"
+    assert row["provider_plugin"] == "superpowers"
+    assert row["marketplace"] == "anthropics"
+    assert row["parse_error"] == "dangling symlink"
+    assert row["desc_raw"] == ""
+
+
+def test_dangling_restored_symlink_stays_user_authored(fake_home):
+    """A dangling symlink into the vault (e.g. someone deleted the vault
+    copy out from under a restore) must still classify as 'user-authored',
+    not 'external-tool' (rule 4 correction).
+    """
+    vault.ensure_vault()
+    target = paths.vault_dir() / "skills" / "phantom"
+    (fake_home / "skills" / "phantom").symlink_to(target, target_is_directory=True)
+    # target never actually created in the vault -- dangling
+    conn = db.connect()
+    scan.scan_user_skills(conn)
+    conn.commit()
+    got = nodes(conn)
+    assert "skill:phantom" in got
+    row = got["skill:phantom"]
+    assert row["origin"] == "user-authored"
+    assert row["parse_error"] == "dangling symlink"
 
 
 def test_symlink_relative_and_chained_resolves_correctly(fake_home):
@@ -442,7 +496,8 @@ def test_scan_vaulted_includes_non_restored_entries(fake_home):
 def test_scan_plugin_skills_skips_id_already_claimed_as_promoted(fake_home):
     make_plugin_skill(fake_home, "anthropics", "superpowers", "brainstorming", name="brainstorming")
     (fake_home / "skills" / "brainstorming").symlink_to(
-        fake_home / "plugins" / "cache" / "anthropics" / "superpowers" / "brainstorming", target_is_directory=True
+        fake_home / "plugins" / "cache" / "anthropics" / "superpowers" / "1.0.0" / "skills" / "brainstorming",
+        target_is_directory=True,
     )
     conn = db.connect()
     scan.scan_user_skills(conn)
@@ -462,14 +517,70 @@ def test_scan_plugin_skills_skips_id_already_claimed_as_promoted(fake_home):
 
 
 def test_plugin_skill_deeply_nested_is_found(fake_home):
+    """Real shape from the golden database:
+    `swmansion/skills/0.1.0/skills/detour/migrate-to-detour/SKILL.md` --
+    marketplace=swmansion, plugin=skills, version=0.1.0, relpath under
+    `skills/` is `detour/migrate-to-detour`. This is the case a plain glob
+    missed 22 times in the previous build.
+    """
     make_plugin_skill(
-        fake_home, "swmansion", "skills", "0.1.0/skills/detour/migrate-to-detour", name="migrate-to-detour"
+        fake_home, "swmansion", "skills", "detour/migrate-to-detour", name="migrate-to-detour", version="0.1.0"
     )
     conn = db.connect()
     count = scan.scan_plugin_skills(conn)
     conn.commit()
+    got = nodes(conn)
     assert count == 1
-    assert "skill:skills@swmansion:0.1.0/skills/detour/migrate-to-detour" in nodes(conn)
+    assert "skill:skills@swmansion:detour/migrate-to-detour" in got
+
+
+def test_plugin_version_and_skills_segment_stripped_from_id(fake_home):
+    """Real shape from the golden database:
+    `ExampleMarket/toolkit/0.1.0/skills/asset/SKILL.md` ->
+    `skill:toolkit@ExampleMarket:asset`, not
+    `skill:toolkit@ExampleMarket:0.1.0/skills/asset`.
+    """
+    make_plugin_skill(fake_home, "ExampleMarket", "toolkit", "asset", name="asset", version="0.1.0")
+    conn = db.connect()
+    scan.scan_plugin_skills(conn)
+    conn.commit()
+    got = nodes(conn)
+    assert "skill:toolkit@ExampleMarket:asset" in got
+    assert got["skill:toolkit@ExampleMarket:asset"]["path"].endswith(
+        "/plugins/cache/ExampleMarket/toolkit/0.1.0/skills/asset/SKILL.md"
+    )
+
+
+def test_plugin_unknown_version_literal_is_handled(fake_home):
+    """Real shape from the golden database: a plugin shipped without
+    version metadata gets a literal "unknown" version directory --
+    `claude-plugins-official/frontend-design/unknown/skills/frontend-design/SKILL.md`.
+    """
+    make_plugin_skill(
+        fake_home, "claude-plugins-official", "frontend-design", "frontend-design", name="frontend-design",
+        version="unknown",
+    )
+    conn = db.connect()
+    scan.scan_plugin_skills(conn)
+    conn.commit()
+    assert "skill:frontend-design@claude-plugins-official:frontend-design" in nodes(conn)
+
+
+def test_plugin_multiple_version_dirs_uses_highest_numeric(fake_home):
+    """A plugin may have more than one version directory present (e.g. left
+    behind by `/plugin update`) -- only the highest-versioned one is
+    scanned, and dotted numeric comparison must not regress to plain string
+    sort (which would rank "0.10.0" below "0.9.0").
+    """
+    make_plugin_skill(fake_home, "acme-market", "acme-plugin", "widget", name="widget-old", version="0.9.0")
+    make_plugin_skill(fake_home, "acme-market", "acme-plugin", "widget", name="widget-new", version="0.10.0")
+    conn = db.connect()
+    count = scan.scan_plugin_skills(conn)
+    conn.commit()
+    assert count == 1
+    got = nodes(conn)["skill:acme-plugin@acme-market:widget"]
+    assert got["name"] == "widget-new"
+    assert "/0.10.0/skills/" in got["path"]
 
 
 def test_plugin_nested_reference_skill_md_is_skipped_as_sub_document(fake_home):
@@ -620,7 +731,8 @@ def _build_home(base: Path) -> Path:
     make_agent(home, "reviewer")
     make_plugin_skill(home, "anthropics", "superpowers", "brainstorming", name="brainstorming")
     (home / "skills" / "brainstorming").symlink_to(
-        home / "plugins" / "cache" / "anthropics" / "superpowers" / "brainstorming", target_is_directory=True
+        home / "plugins" / "cache" / "anthropics" / "superpowers" / "1.0.0" / "skills" / "brainstorming",
+        target_is_directory=True,
     )
     make_skill(home, "shelved-two")
     return home
