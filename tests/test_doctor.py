@@ -210,26 +210,45 @@ def test_inspect_does_not_flag_restored_vaulted_entry_as_missing_node(fake_home)
 # ---------------------------------------------------------------------------
 
 
-def test_inspect_flags_stale_promoted_symlink_with_working_remediation(fake_home):
+def test_inspect_flags_a_promoted_symlink_whose_target_is_gone(fake_home):
+    """The real stale case: /plugin update moved the cached version directory,
+    so the capability is listed but nothing serves it."""
+    import shutil
+
     cache_dir = make_plugin_skill(fake_home, "acme-market", "acme-plugin", "widget")
     symlink = paths.skills_dir() / "widget"
     symlink.symlink_to(cache_dir, target_is_directory=True)
     paths.settings_path().write_text(json.dumps({"enabledPlugins": {"acme-plugin@acme-market": False}}))
     conn = db.connect()
     full_scan(conn)
-    assert conn.execute("SELECT state FROM nodes WHERE id = 'skill:acme-plugin@acme-market:widget'").fetchone()["state"] == "live"
+
+    shutil.rmtree(cache_dir)  # the version directory goes away underneath it
 
     report = doctor.inspect(conn)
     findings = findings_by_check(report, "stale-promoted-symlink")
     assert len(findings) == 1
-    # The previous build's dead-end advice named `harness activate`, which
-    # no-ops on a live node. The fix here must not repeat that.
-    assert "harness activate" not in findings[0].fix.split(";")[0]
+    # `harness activate` no-ops on a live node, so it must not be the advice.
+    assert "harness activate" not in findings[0].fix
+
+
+def test_a_promoted_skill_whose_plugin_is_disabled_is_NOT_a_finding(fake_home):
+    """Promote-then-disable IS mechanism 3's intended outcome.
+
+    An earlier version flagged exactly this and produced 28 warnings against a
+    healthy real configuration -- the cry-wolf failure rule 5 exists to stop.
+    """
+    cache_dir = make_plugin_skill(fake_home, "acme-market", "acme-plugin", "widget")
+    symlink = paths.skills_dir() / "widget"
+    symlink.symlink_to(cache_dir, target_is_directory=True)
+    paths.settings_path().write_text(json.dumps({"enabledPlugins": {"acme-plugin@acme-market": False}}))
+    conn = db.connect()
+    full_scan(conn)
+
+    report = doctor.inspect(conn)
+    assert findings_by_check(report, "stale-promoted-symlink") == []
 
 
 def test_inspect_does_not_flag_promoted_symlink_when_plugin_still_enabled(fake_home):
-    # A promoted symlink into a versioned plugin cache path is completely
-    # normal while its plugin remains enabled -- rule 5, do not cry wolf.
     cache_dir = make_plugin_skill(fake_home, "acme-market", "acme-plugin", "widget")
     symlink = paths.skills_dir() / "widget"
     symlink.symlink_to(cache_dir, target_is_directory=True)

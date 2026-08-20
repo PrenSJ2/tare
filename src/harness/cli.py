@@ -198,6 +198,10 @@ def _cmd_vault(conn, args) -> int:
             return 2
 
     before = audit_mod.audit(conn).total_tokens
+    # Captured BEFORE applying: afterwards the plugins are disabled and the
+    # promoted nodes have changed hands, so plugin_plan() correctly returns
+    # nothing -- recomputing it here reported every token figure as ~0.
+    planned = shelve_mod.plugin_plan(conn, floor_tokens=args.floor)
 
     try:
         reports = shelve_mod.shelve_user(conn, dry_run=dry)
@@ -237,8 +241,7 @@ def _cmd_vault(conn, args) -> int:
         # below, which IS a per-item saving, so without the qualifier someone
         # skimming a hundred lines and summing the parentheticals overcounts by
         # every promoted skill.
-        promoted_tokens = {p["id"]: p.get("est_tokens", 0) or 0
-                           for p in shelve_mod.plugin_plan(conn, floor_tokens=args.floor)["promote"]}
+        promoted_tokens = {p["id"]: p.get("est_tokens", 0) or 0 for p in planned["promote"]}
         kept = sum(promoted_tokens.get(pid, 0) for pid in plugins["promoted"])
         print(f"\n{'would promote' if dry else 'promoted'} {len(plugins['promoted'])} skill(s) (~{kept} tok kept):")
         for pid in plugins["promoted"]:
@@ -247,8 +250,7 @@ def _cmd_vault(conn, args) -> int:
         # Per-plugin breakdown, not one combined figure for a comma list: at
         # ~100 items an operator cannot otherwise tell which plugin drives the
         # saving without cross-referencing `harness audit`.
-        plan = shelve_mod.plugin_plan(conn, floor_tokens=args.floor)
-        saving = {d["key"]: d.get("cold_tokens", 0) for d in plan["disable"]}
+        saving = {d["key"]: d.get("cold_tokens", 0) for d in planned["disable"]}
         total = sum(saving.get(k, 0) for k in plugins["disabled"])
         print(f"\n{'would disable' if dry else 'disabled'} {len(plugins['disabled'])} plugin(s), "
               f"~{total} tok total: "

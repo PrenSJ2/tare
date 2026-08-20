@@ -244,41 +244,43 @@ def _inspect_vaulted_without_node(report: Report, conn, data: dict) -> None:
 
 
 def _inspect_stale_promoted_symlinks(report: Report, conn) -> None:
-    """A promoted skill (origin='user-authored', provider_plugin set) whose
-    plugin is disabled in settings.json but whose symlink still exists on
-    disk (rule 4/5): promotion followed by disabling is the whole point of
-    mechanism 3, so this is only a problem if the settings say the plugin
-    should be OFF while the node still reads 'live' -- i.e. the promote step
-    ran but the disable step never landed, or the plugin was disabled by
-    hand afterward without going through `harness activate`/un-promote.
-    Such a node is `state='live'`, so telling the operator to run `harness
-    activate` (which no-ops on a live node) is exactly the previous build's
-    dead-end advice; the real fix is re-running the plugin toggle.
-    """
-    try:
-        settings = install._load()
-    except ValueError:
-        report.skipped.append("stale-promoted-symlink check skipped: settings.json is unreadable")
-        return
-    enabled = settings.get("enabledPlugins")
-    if not isinstance(enabled, dict):
-        return
+    """A promoted skill whose symlink no longer resolves to anything.
 
+    A promoted skill is live on the load path while its plugin is disabled --
+    that is not a fault, it is precisely what mechanism 3 produces, and an
+    earlier version of this check treated it as one. On a healthy real
+    configuration that fired 28 times, which is exactly the cry-wolf failure
+    the design warns about: a check that flags normal operation gets ignored,
+    and an ignored check is the same as no check.
+
+    What genuinely goes stale is the symlink TARGET. A promotion points into a
+    versioned plugin cache path, so `/plugin update` moving or pruning that
+    version directory leaves the link dangling -- the capability is listed but
+    nothing serves it. That is the real finding, and `harness activate` is
+    no help because the node is already `state='live'`.
+    """
     rows = conn.execute(
-        "SELECT id, provider_plugin, marketplace, state FROM nodes "
+        "SELECT id, path, provider_plugin, marketplace FROM nodes "
         "WHERE kind='skill' AND origin='user-authored' AND provider_plugin IS NOT NULL AND provider_plugin != ''"
     ).fetchall()
     for row in rows:
+        if not row["path"]:
+            continue
+        link = Path(row["path"]).parent  # nodes.path is <symlink>/SKILL.md
+        if not link.is_symlink():
+            continue
+        if link.resolve(strict=False).exists():
+            continue
         plugin_key = f"{row['provider_plugin']}@{row['marketplace']}" if row["marketplace"] else row["provider_plugin"]
-        if enabled.get(plugin_key, True) is False and row["state"] == "live":
-            _add(
-                report,
-                "warning",
-                "stale-promoted-symlink",
-                f"{row['id']} is promoted and marked live, but {plugin_key} is disabled in settings.json",
-                f"re-run the plugin disable for {plugin_key} (it should have un-promoted this skill); "
-                "`harness activate` on this node is a no-op, it is already live",
-            )
+        _add(
+            report,
+            "warning",
+            "stale-promoted-symlink",
+            f"{row['id']} is promoted but {link} points at a target that no longer exists "
+            f"-- {plugin_key}'s cached version directory has probably moved",
+            f"re-point it at the current version under {paths.plugins_cache_dir()}, or re-run "
+            "`harness vault --apply` to promote it afresh",
+        )
 
 
 # ---------------------------------------------------------------------------
