@@ -211,7 +211,7 @@ def _cmd_vault(conn, args) -> int:
     protected = [r for r in reports if r.get("reason") == "protected"]
     verb = "would shelve" if dry else "shelved"
 
-    user_tokens = sum(r.get("tokens", 0) for r in moved)
+    user_tokens = sum(r.get("est_tokens", 0) or 0 for r in moved)
     print(f"{verb} {len(moved)} user capabilit(ies) (~{user_tokens} tok):")
     for r in sorted(moved, key=lambda r: (r["kind"], r["name"])):
         print(f"  {r['kind']} {r['name']}  (~{r.get('tokens', 0)} tok)")
@@ -224,7 +224,7 @@ def _cmd_vault(conn, args) -> int:
     # Never exclude silently: an operator who knows a capability is never
     # invoked must be able to see why it was left off the list.
     if protected:
-        tok = sum(r.get("tokens", 0) for r in protected)
+        tok = sum(r.get("est_tokens", 0) or 0 for r in protected)
         print(
             f"\nprotected {len(protected)} capabilit(ies) (~{tok} tok) -- "
             "reachable via routes-to from a used capability, so left alone:"
@@ -233,18 +233,39 @@ def _cmd_vault(conn, args) -> int:
             print(f"  {r['kind']} {r['name']}  -- routed to from {r.get('protected_by')!r}")
 
     if plugins["promoted"]:
-        print(f"\n{'would promote' if dry else 'promoted'} {len(plugins['promoted'])} skill(s):")
+        # "kept", not a saving. This line is shaped like the disable breakdown
+        # below, which IS a per-item saving, so without the qualifier someone
+        # skimming a hundred lines and summing the parentheticals overcounts by
+        # every promoted skill.
+        promoted_tokens = {p["id"]: p.get("est_tokens", 0) or 0
+                           for p in shelve_mod.plugin_plan(conn, floor_tokens=args.floor)["promote"]}
+        kept = sum(promoted_tokens.get(pid, 0) for pid in plugins["promoted"])
+        print(f"\n{'would promote' if dry else 'promoted'} {len(plugins['promoted'])} skill(s) (~{kept} tok kept):")
         for pid in plugins["promoted"]:
-            print(f"  {pid} (kept on the load path)")
+            print(f"  {pid} (~{promoted_tokens.get(pid, 0)} tok kept)")
     if plugins["disabled"]:
-        print(f"\n{'would disable' if dry else 'disabled'} {len(plugins['disabled'])} plugin(s): "
-              + ", ".join(plugins["disabled"]))
+        # Per-plugin breakdown, not one combined figure for a comma list: at
+        # ~100 items an operator cannot otherwise tell which plugin drives the
+        # saving without cross-referencing `harness audit`.
+        plan = shelve_mod.plugin_plan(conn, floor_tokens=args.floor)
+        saving = {d["key"]: d.get("cold_tokens", 0) for d in plan["disable"]}
+        total = sum(saving.get(k, 0) for k in plugins["disabled"])
+        print(f"\n{'would disable' if dry else 'disabled'} {len(plugins['disabled'])} plugin(s), "
+              f"~{total} tok total: "
+              + ", ".join(f"{k} (~{saving.get(k, 0)} tok)" for k in plugins["disabled"]))
+        plugin_saving = total
+    else:
+        plugin_saving = 0
     for f in plugins["failed"]:
         print(f"  failed {f.get('id')}: {f.get('error')}")
 
     after = audit_mod.audit(conn).total_tokens
     if dry:
-        print(f"\nalways-loaded index: ~{before:,} tok now")
+        # Project rather than re-audit: nothing has moved, so audit() would
+        # just report `before` again and the operator would learn nothing.
+        projected = before - user_tokens - plugin_saving
+        print(f"\nalways-loaded index: ~{before:,} tok now -> ~{projected:,} tok if applied")
+        print(f"total would reclaim: ~{user_tokens + plugin_saving:,} tokens")
     else:
         print(f"\nalways-loaded index: ~{before:,} tok -> ~{after:,} tok")
         print(f"total reclaimed: ~{before - after:,} tokens")

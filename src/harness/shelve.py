@@ -261,6 +261,10 @@ def shelve_user(conn, dry_run: bool = True) -> list[dict]:
             "eligible": entry["eligible"],
             "reason": entry["reason"],
             "protected_by": entry["protected_by"],
+            # Always carried, eligible or not: the CLI reports the token cost of
+            # protected capabilities too, so the operator can see what the guard
+            # is holding back and judge whether it is worth it.
+            "est_tokens": entry["est_tokens"],
         }
 
         if not entry["eligible"]:

@@ -57,18 +57,25 @@ def _load(path: Path) -> tuple[frontmatter.Frontmatter | None, int, str | None]:
     is just another parse_error, the same shape as bad YAML, so every
     caller has exactly one failure to handle instead of two.
 
-    Returns (frontmatter-or-None, est_tokens, parse_error). est_tokens is
-    computed from whatever text could actually be read -- 0 only when the
-    file could not be read at all, not merely when its frontmatter is bad,
-    because a file with broken frontmatter still costs real context if it's
-    loaded.
+    Returns (frontmatter-or-None, est_tokens, parse_error).
+
+    est_tokens measures the ALWAYS-LOADED cost, which is the name and
+    description Claude Code lists in every prompt -- NOT the whole file. The
+    body is only read once a capability is actually invoked, so charging it
+    to every turn overstates the index by roughly twenty times: measured on a
+    real configuration, whole-file accounting reported 411,782 tokens per turn
+    against a true 19,437, and that inflation then dragged two extra plugins
+    over the savings floor. When the frontmatter cannot be parsed there is no
+    description to charge, but the file is still listed, so fall back to the
+    filename's cost rather than the body's.
     """
     try:
         text = _read_text(path)
     except OSError as exc:
         return None, 0, f"could not read: {exc}"
     fm, err = frontmatter.parse(text)
-    return fm, paths.est_tokens(text), err
+    loaded = f"{fm.name}: {fm.description}" if fm else path.name
+    return fm, paths.est_tokens(loaded), err
 
 
 def _name_and_desc(fm: frontmatter.Frontmatter | None, fallback: str) -> tuple[str, str]:

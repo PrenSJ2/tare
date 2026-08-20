@@ -222,7 +222,7 @@ def test_shelve_plugins_promotion_collision_drops_the_plugin_and_reports_failure
     collision.mkdir(parents=True)
     (collision / "SOMETHING").write_text("not harness's directory\n")
 
-    result = shelve.shelve_plugins(conn, dry_run=False)
+    result = shelve.shelve_plugins(conn, dry_run=False, floor_tokens=0)
 
     assert result["disabled"] == []
     assert result["promoted"] == []
@@ -257,7 +257,7 @@ def test_shelve_plugins_default_is_dry_run_and_touches_nothing(fake_home):
     scan.scan_plugin_skills(conn)
     conn.commit()
 
-    result = shelve.shelve_plugins(conn)  # no dry_run argument
+    result = shelve.shelve_plugins(conn, floor_tokens=0)  # no dry_run argument
 
     assert result["dry_run"] is True
     assert "plug@market" in result["disabled"]
@@ -277,11 +277,11 @@ def test_shelve_plugins_ownership_scope_filter_is_identical_in_both_modes(fake_h
 
     paths.settings_path().write_text(json.dumps({"enabledPlugins": {"toolkit@marketA": False}}))
 
-    preview = shelve.shelve_plugins(conn, dry_run=True)
+    preview = shelve.shelve_plugins(conn, dry_run=True, floor_tokens=0)
     assert "toolkit@marketA" not in preview["disabled"]
     assert "toolkit@marketB" in preview["disabled"]
 
-    applied = shelve.shelve_plugins(conn, dry_run=False)
+    applied = shelve.shelve_plugins(conn, dry_run=False, floor_tokens=0)
     assert "toolkit@marketA" not in applied["disabled"]
     assert "toolkit@marketB" in applied["disabled"]
 
@@ -471,7 +471,7 @@ def test_shelve_plugins_rolls_back_symlinks_if_settings_write_fails(fake_home, m
     monkeypatch.setattr(shelve, "_write_settings", boom)
 
     with pytest.raises(RuntimeError):
-        shelve.shelve_plugins(conn, dry_run=False)
+        shelve.shelve_plugins(conn, dry_run=False, floor_tokens=0)
 
     assert not (fake_home / "skills" / "used-one").exists()  # symlink rolled back
     row = conn.execute("SELECT origin FROM nodes WHERE id = ?", (used_id,)).fetchone()
@@ -506,7 +506,7 @@ def test_plugin_plan_widens_promote_to_include_guard_protected_skills(fake_home)
     conn.commit()
     mark_used(conn, "skill:plug@market:orchestrator")
 
-    plan = shelve.plugin_plan(conn)
+    plan = shelve.plugin_plan(conn, floor_tokens=0)
 
     promoted_ids = {p["id"] for p in plan["promote"]}
     assert "skill:plug@market:orchestrator" in promoted_ids
@@ -531,7 +531,7 @@ def test_shelve_plugins_apply_promotes_and_disables_end_to_end(fake_home):
     used_id = "skill:plug@market:used-one"
     mark_used(conn, used_id)
 
-    result = shelve.shelve_plugins(conn, dry_run=False)
+    result = shelve.shelve_plugins(conn, dry_run=False, floor_tokens=0)
 
     assert result["disabled"] == ["plug@market"]
     assert result["promoted"] == [used_id]
