@@ -176,3 +176,29 @@ def test_a_corrupt_payload_does_not_break_reporting(fake_home):
     conn.execute("INSERT INTO events (ts, kind, node_id, payload) VALUES ('t','activation','a','{not json')")
     conn.commit()
     memory.suggestions(conn, now=NOW)  # must not raise
+
+
+def test_resolve_project_returns_none_rather_than_a_nearest_ancestor(fake_home):
+    """An earlier version walked up to the closest existing directory, so an
+    unknown key resolved to the home directory and would have pointed the
+    operator at unrelated notes."""
+    assert memory.resolve_project("-definitely-not-a-real-path-xyz") is None
+
+
+def test_resolve_project_prefers_the_longest_matching_component(tmp_path, monkeypatch):
+    """Real directory names contain hyphens, so the key is lossy."""
+    target = tmp_path / "Some-Project"
+    target.mkdir()
+    key = "-" + str(target).replace("/", "-").lstrip("-")
+    assert memory.resolve_project(key) == target
+
+
+def test_project_notes_lists_only_files_that_exist(tmp_path):
+    (tmp_path / "CLAUDE.md").write_text("use profile X here\n")
+    found = dict(memory.project_notes(tmp_path))
+    assert "CLAUDE.md" in found and found["CLAUDE.md"] == 1
+    assert "AGENTS.md" not in found
+
+
+def test_project_notes_is_empty_for_a_project_with_none(tmp_path):
+    assert memory.project_notes(tmp_path) == []

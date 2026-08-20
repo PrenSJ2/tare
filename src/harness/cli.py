@@ -222,10 +222,27 @@ def _cmd_deactivate(conn, args) -> int:
 
 
 def _cmd_learned(conn, args) -> int:
+    from pathlib import Path
+
     project = memory_mod.current_project() if args.here else None
     if project:
-        print(f"scoped to this project ({project})\n")
+        print(f"scoped to this project ({Path.cwd()})\n")
     print(memory_mod.render(memory_mod.suggestions(conn, project=project)))
+
+    if args.here:
+        # The pointer half: harness knows what you use here, this project's own
+        # files know how it is configured here. Naming them beats copying them
+        # -- a copy is what goes stale.
+        notes = memory_mod.project_notes(Path.cwd())
+        print()
+        if notes:
+            print("how tools are configured here is recorded in:")
+            for name, lines in notes:
+                print(f"  {Path.cwd() / name}  ({lines} lines)")
+        else:
+            print("no CLAUDE.md in this project -- that is where per-project tool")
+            print("configuration belongs (which browser profile, which extension,")
+            print("which credentials), not in the harness database.")
 
     if args.projects:
         print("\nwhat each project leans on:")
@@ -233,8 +250,11 @@ def _cmd_learned(conn, args) -> int:
             memory_mod.by_project(conn).items(),
             key=lambda kv: -sum(c for _, c in kv[1]),
         )[:8]:
-            used = ", ".join(f"{n} ({c})" for n, c in top)
-            print(f"  {name[:40]:40s} {used}")
+            used = ", ".join(f"{n} ({c})" for n, c in top[:4])
+            root = memory_mod.resolve_project(name)
+            notes = ", ".join(n for n, _ in memory_mod.project_notes(root)) if root else ""
+            where = f"  [{notes}]" if notes else ("  [no notes]" if root else "  [moved or deleted]")
+            print(f"  {name[:38]:38s} {used}{where}")
         print("\nHow a tool is configured per project belongs in that project's")
         print("CLAUDE.md -- this only knows what you use where.")
     return 0

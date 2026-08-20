@@ -162,6 +162,66 @@ def _decayed(rows: list[str], now: datetime) -> float:
     return total
 
 
+# Where a project records how its tools are configured. harness points at
+# these; it deliberately does not copy them. Order matters -- the first hit is
+# reported as the primary place to look.
+NOTE_FILES = ("CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md", ".agents/product-marketing.md")
+
+
+def resolve_project(key: str) -> Path | None:
+    """Turn a transcript-directory key back into a real path, or None.
+
+    Claude Code builds these keys by replacing "/" with "-", which is lossy:
+    `-Users-you-Documents-Code-Some-Project--claude` could decode several ways
+    because real directory names contain hyphens too. So candidates are walked
+    against the filesystem, greedily preferring longer components, and EVERY
+    part of the key must be consumed.
+
+    Returning None is the correct answer for a project that has been moved or
+    deleted. An earlier version returned the nearest existing ancestor, so an
+    unknown key resolved to `/Users/you` and would have pointed the operator
+    at a stranger's notes -- exactly the invented path this is meant to avoid.
+    """
+    parts = [p for p in key.lstrip("-").split("-") if p]
+    if not parts:
+        return None
+
+    def walk(base: Path, remaining: list[str]) -> Path | None:
+        if not remaining:
+            return base
+        # Longest component first: "Some-Project" must beat "Some".
+        for take in range(len(remaining), 0, -1):
+            nxt = base / "-".join(remaining[:take])
+            if nxt.is_dir():
+                found = walk(nxt, remaining[take:])
+                if found is not None:
+                    return found
+        return None
+
+    return walk(Path("/"), parts)
+
+
+def project_notes(root: Path) -> list[tuple[str, int]]:
+    """Which files in this project describe how its tools are configured.
+
+    This is the pointer half of the second brain. "Use this browser profile
+    with that extension here" is a fact about a project, and facts belong in
+    the project's own files where they sit beside the code they describe and
+    go stale visibly. Copying them into this database would make a third
+    source of truth, and every memory system surveyed reports that the copy is
+    what rots.
+    """
+    found = []
+    for name in NOTE_FILES:
+        path = root / name
+        try:
+            if path.is_file():
+                found.append((name, len(path.read_text(encoding="utf-8", errors="replace").splitlines())))
+        except OSError:
+            continue
+    return found
+
+
 def by_project(conn: sqlite3.Connection, limit: int = 6) -> dict[str, list[tuple[str, int]]]:
     """Which capabilities each project actually leans on.
 
