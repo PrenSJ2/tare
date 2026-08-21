@@ -66,3 +66,31 @@ def test_is_up_is_false_on_a_free_port():
         s.bind(("127.0.0.1", 0))
         free = s.getsockname()[1]
     assert console.is_up(free) is False
+
+
+def test_orchestration_skips_sessions_with_no_agents(fake_home, monkeypatch):
+    """Slicing the newest N sessions catches idle ones and returns an empty
+    tree while a rich session sits just outside the window."""
+    class FakeOrch:
+        def __init__(self, n):
+            self.parent_of = {f"a{i}": "" for i in range(n)}
+            self.depth = {f"a{i}": 0 for i in range(n)}
+            self.files = [("/x", 3)] if n else []
+            self.tools = [("Bash", 5)] if n else []
+
+    class FakeReader:
+        @staticmethod
+        def all_sessions():
+            return [("p", "empty1"), ("p", "empty2"), ("p", "rich")]
+        @staticmethod
+        def orchestration(session, redact=False):
+            return FakeOrch(4 if session == "rich" else 0)
+
+    monkeypatch.setattr(console, "_reader", lambda: FakeReader)
+    out = console._orchestration(False)
+    assert len(out["edges"]) == 4, "the rich session must be reached past the empty ones"
+
+
+def test_orchestration_is_empty_without_swarm(fake_home, monkeypatch):
+    monkeypatch.setattr(console, "_reader", lambda: None)
+    assert console._orchestration(False)["edges"] == []

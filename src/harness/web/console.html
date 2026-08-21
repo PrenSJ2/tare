@@ -114,6 +114,7 @@
       <button role="tab" data-v="skills" aria-selected="true">Skills &amp; tools</button>
       <button role="tab" data-v="memory" aria-selected="false">Memory</button>
       <button role="tab" data-v="agents" aria-selected="false">Agents</button>
+      <button role="tab" data-v="orch" aria-selected="false">Orchestration</button>
     </nav>
     <span class="pulse"><i></i><span id="pulse">connecting…</span></span>
   </div>
@@ -164,6 +165,30 @@
     <div id="fleet"></div>
   </section>
 
+  <section data-view="orch" hidden>
+    <div class="ledger" id="oled"></div>
+    <div style="height:1.1rem"></div>
+    <h2>The dispatch tree — who launched whom</h2>
+    <p style="margin-bottom:.8rem">Rebuilt from transcripts, not hooks: an agent that dispatches
+       sub-agents records their ids in its own transcript, so branching is recoverable after the fact.
+       Rings mark agents that dispatched others.</p>
+    <div class="stage">
+      <canvas id="ocv" width="1100" height="440"></canvas>
+      <div class="inspect" id="oinsp" hidden></div>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--ink-faint)"></i>session</span>
+      <span><i style="background:var(--live)"></i>agent</span>
+      <span><i style="background:var(--cost)"></i>dispatched sub-agents</span>
+    </div>
+    <div style="height:1.4rem"></div>
+    <h2>File attention — what the fleet kept coming back to</h2>
+    <div class="bars" id="heat"></div>
+    <div style="height:1.4rem"></div>
+    <h2>Tool mix</h2>
+    <div class="bars" id="toolmix"></div>
+  </section>
+
   <footer id="foot">loading…</footer>
 </div>
 
@@ -180,6 +205,7 @@ document.querySelectorAll("nav button").forEach(b => b.addEventListener("click",
   document.querySelectorAll("nav button").forEach(o => o.setAttribute("aria-selected", String(o === b)));
   document.querySelectorAll("section[data-view]").forEach(s => { s.hidden = s.dataset.view !== b.dataset.v; });
   if (b.dataset.v === "skills") graph.kick();
+  if (b.dataset.v === "orch") tree.kick();
 }));
 
 /* ---- graph: positions persist across refreshes so nodes never jump ------ */
@@ -299,6 +325,116 @@ const graph = (() => {
   return { ingest, kick: () => { alpha = Math.max(alpha, .35); } };
 })();
 
+/* ---- orchestration tree ------------------------------------------------ */
+const tree = (() => {
+  const cv = $("ocv"), ctx = cv.getContext("2d"), insp = $("oinsp");
+  let N = [], L = [], pos = new Map(), picked = null, alpha = 0, view = {x:0,y:0,k:1};
+
+  function ingest() {
+    const o = D.orch || {edges:[], depth:{}};
+    const kids = new Map();
+    const ids = new Set();
+    for (const e of o.edges) {
+      ids.add(e.p); ids.add(e.c);
+      if (!kids.has(e.p)) kids.set(e.p, []);
+      kids.get(e.p).push(e.c);
+    }
+    N = [...ids].map((id, i) => {
+      const prev = pos.get(id);
+      const isSession = !o.depth.hasOwnProperty(id);
+      const branches = (kids.get(id) || []).length;
+      return prev ? {id, isSession, branches, x:prev.x, y:prev.y, vx:0, vy:0}
+                  : {id, isSession, branches,
+                     x: cv.width/2 + Math.cos(i*2.4)*(120 + (i%6)*24),
+                     y: cv.height/2 + Math.sin(i*2.4)*(100 + (i%5)*20), vx:0, vy:0};
+    });
+    const idx = new Map(N.map((n,i) => [n.id, i]));
+    L = o.edges.map(e => [idx.get(e.p), idx.get(e.c)]).filter(([a,b]) => a != null && b != null);
+    alpha = Math.max(alpha, .9);
+  }
+
+  function step() {
+    if (alpha < .005) return;
+    alpha *= .985;
+    const cx = cv.width/2, cy = cv.height/2;
+    for (const n of N) { n.vx += (cx-n.x)*.0022; n.vy += (cy-n.y)*.0022; }
+    for (let i=0;i<N.length;i++) for (let j=i+1;j<N.length;j++) {
+      const a=N[i], b=N[j]; let dx=b.x-a.x, dy=b.y-a.y, d2=dx*dx+dy*dy;
+      if (d2>36000||d2===0) continue;
+      const f=260/d2; dx*=f; dy*=f;
+      a.vx-=dx; a.vy-=dy; b.vx+=dx; b.vy+=dy;
+    }
+    for (const [i,j] of L) {
+      const a=N[i], b=N[j]; if (!a||!b) continue;
+      const dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy)||1, f=(d-70)*.006;
+      const ux=dx/d*f, uy=dy/d*f;
+      a.vx+=ux; a.vy+=uy; b.vx-=ux; b.vy-=uy;
+    }
+    for (const n of N) { n.x += n.vx *= .85; n.y += n.vy *= .85; pos.set(n.id, {x:n.x, y:n.y}); }
+  }
+
+  function draw() {
+    ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,cv.width,cv.height);
+    ctx.translate(view.x, view.y); ctx.scale(view.k, view.k);
+    ctx.lineWidth = 1;
+    for (const [i,j] of L) {
+      const a=N[i], b=N[j]; if (!a||!b) continue;
+      const hot = picked && (a.id===picked.id || b.id===picked.id);
+      ctx.strokeStyle = hot ? css("--cost") : css("--rule");
+      ctx.globalAlpha = hot ? .95 : .5;
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    for (const n of N) {
+      const r = n.isSession ? 7 : (n.branches ? 6 : 4);
+      ctx.beginPath(); ctx.arc(n.x,n.y,r,0,6.2832);
+      ctx.fillStyle = n.isSession ? css("--ink-faint") : n.branches ? css("--cost") : css("--live");
+      ctx.fill();
+      if (picked && n.id===picked.id) {
+        ctx.strokeStyle = css("--cost"); ctx.lineWidth = 2.2;
+        ctx.beginPath(); ctx.arc(n.x,n.y,r+3.5,0,6.2832); ctx.stroke(); ctx.lineWidth = 1;
+      }
+    }
+  }
+  function frame(){ step(); draw(); requestAnimationFrame(frame); }
+
+  cv.addEventListener("click", ev => {
+    const rect = cv.getBoundingClientRect();
+    const x = ((ev.clientX-rect.left)*(cv.width/rect.width) - view.x)/view.k;
+    const y = ((ev.clientY-rect.top)*(cv.height/rect.height) - view.y)/view.k;
+    let best=null, bd=196;
+    for (const n of N) { const d=(n.x-x)**2+(n.y-y)**2; if (d<bd) { bd=d; best=n; } }
+    picked = best;
+    if (!best) { insp.hidden = true; return; }
+    const agents = D.fleet.projects.flatMap(p => p.agents);
+    const match = agents.find(a => a.id === best.id);
+    insp.hidden = false;
+    insp.innerHTML = `<h4>${esc(match ? match.label : best.id)}</h4>
+      <div class="st">${best.isSession ? "session" : "agent"} · ${best.branches} dispatched${
+        match ? ` · ${esc(match.model||"?")} · ${clock(match.secs)}` : ""}</div>
+      <div id="tl" class="meta">loading timeline…</div>`;
+    if (!best.isSession) {
+      fetch(`/api/timeline?agent=${encodeURIComponent(best.id)}`)
+        .then(r => r.json())
+        .then(evts => {
+          const el = document.getElementById("tl"); if (!el) return;
+          el.innerHTML = evts.length
+            ? `<ul class="plain" style="margin-top:.4rem">${evts.slice(0,12).map(e =>
+                `<li title="${esc(e.detail)}">${esc(e.tool)} ${esc(e.detail)}</li>`).join("")}</ul>`
+            : "no tool calls recorded";
+        }).catch(() => {});
+    }
+  });
+  let drag = null;
+  cv.addEventListener("pointerdown", e => { drag = {x:e.clientX,y:e.clientY,vx:view.x,vy:view.y}; });
+  addEventListener("pointerup", () => drag = null);
+  addEventListener("pointermove", e => { if (drag) { view.x = drag.vx+(e.clientX-drag.x); view.y = drag.vy+(e.clientY-drag.y); } });
+  cv.addEventListener("wheel", e => { e.preventDefault();
+    view.k = Math.min(4, Math.max(.4, view.k*(e.deltaY<0?1.1:.9))); }, {passive:false});
+  frame();
+  return { ingest, kick: () => { alpha = Math.max(alpha, .35); } };
+})();
+
 /* ---- render ------------------------------------------------------------ */
 function render(first) {
   const t = D.totals, shelvedN = D.nodes.filter(n => n.s !== "live").length;
@@ -366,7 +502,29 @@ function render(first) {
       (p.agents.length > 40 ? `<div class="meta" style="margin-top:.4rem">… ${p.agents.length-40} more not shown</div>` : "");
   }).join("");
 
-  graph.ingest();
+  const O = D.orch || {edges:[], files:[], tools:[], depth:{}};
+  const branchers = new Set(O.edges.map(e => e.p));
+  $("oled").innerHTML = [
+    ["dispatch edges", fmt(O.edges.length), ""],
+    ["agents in tree", fmt(Object.keys(O.depth).length), ""],
+    ["nested", fmt(Object.values(O.depth).filter(d => d > 0).length), ""],
+    ["files touched", fmt(O.files.length), ""],
+    ["tool calls", fmt(O.tools.reduce((s,[,c]) => s+c, 0)), ""],
+  ].map(([k,v,c]) => `<div class="cell"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join("");
+
+  const maxHeat = Math.max(1, ...O.files.map(([,c]) => c));
+  $("heat").innerHTML = O.files.slice(0,12).map(([f,c]) => `<div class="bar">
+    <div class="lbl" title="${esc(f)}">${esc(f.split("/").slice(-2).join("/"))}</div>
+    <div class="track"><div class="fill" style="width:${(100*c/maxHeat).toFixed(1)}%"></div></div>
+    <div class="num">${c}×</div></div>`).join("") || '<p class="meta">nothing recorded</p>';
+
+  const maxTool = Math.max(1, ...O.tools.map(([,c]) => c));
+  $("toolmix").innerHTML = O.tools.slice(0,8).map(([n,c]) => `<div class="bar">
+    <div class="lbl">${esc(n)}</div>
+    <div class="track"><div class="fill idx" style="width:${(100*c/maxTool).toFixed(1)}%"></div></div>
+    <div class="num">${fmt(c)}</div></div>`).join("") || '<p class="meta">nothing recorded</p>';
+
+  graph.ingest(); tree.ingest();
   $("pulse").textContent = `${runningN} running · updated ${new Date().toLocaleTimeString("en-GB")}`;
   $("foot").textContent = `${D.nodes.length} capabilities · ${D.edges.length} routes-to edges · `
     + `${agents.length} agents · read from ~/.claude/harness.db and the transcripts`;

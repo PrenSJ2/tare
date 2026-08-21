@@ -85,6 +85,50 @@ def _graph(conn: sqlite3.Connection) -> dict:
     }
 
 
+def _orchestration(redact: bool) -> dict:
+    """The dispatch tree, file attention and tool mix for the newest sessions.
+
+    This is the part modelled on agent-flow -- branching, a file heatmap, a
+    tool distribution -- rebuilt from transcripts so it works retroactively and
+    without hooks. Scoped to a few recent sessions because the tree walk reads
+    every subagent transcript it reaches.
+    """
+    reader = _reader()
+    if reader is None:
+        return {"edges": [], "files": [], "tools": [], "depth": {}}
+    edges, files, tools, depth = [], {}, {}, {}
+    # Take the newest sessions that actually dispatched something. Simply
+    # slicing the newest N catches idle sessions and returns an empty tree
+    # while a rich one sits just outside the window.
+    kept = 0
+    for _project, session in reader.all_sessions()[:14]:
+        if kept >= 4:
+            break
+        try:
+            orch = reader.orchestration(session, redact=redact)
+        except Exception:
+            continue
+        if not orch.depth:
+            continue
+        kept += 1
+        for child, parent in orch.parent_of.items():
+            edges.append({"p": parent or session[:8], "c": child[:10]})
+        for path_str, count in orch.files:
+            files[path_str] = files.get(path_str, 0) + count
+        for name, count in orch.tools:
+            tools[name] = tools.get(name, 0) + count
+        for agent_id, d in orch.depth.items():
+            depth[agent_id[:10]] = d
+    home = str(Path.home())
+    return {
+        "edges": edges[:400],
+        "files": sorted(((p.replace(home, "~"), c) for p, c in files.items()),
+                        key=lambda kv: -kv[1])[:20],
+        "tools": sorted(tools.items(), key=lambda kv: -kv[1]),
+        "depth": depth,
+    }
+
+
 def _fleet(redact: bool) -> dict:
     reader = _reader()
     if reader is None:
@@ -144,6 +188,7 @@ def payload(*, redact: bool = False) -> dict:
         "edges": graph["edges"],
         "memory": mem,
         "fleet": _fleet(redact),
+        "orch": _orchestration(redact),
     }
 
 
@@ -164,7 +209,26 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - name fixed by the base class
         try:
-            if self.path.startswith("/api/data"):
+            if self.path.startswith("/api/timeline"):
+                # Fetched on demand when a row is expanded, so the poll payload
+                # stays small -- a timeline per agent for 229 agents would not.
+                from urllib.parse import parse_qs, urlparse
+                agent = (parse_qs(urlparse(self.path).query).get("agent") or [""])[0]
+                reader = _reader()
+                events = []
+                if reader and agent:
+                    # The payload truncates agent ids to 10 chars for display,
+                    # so what comes back here is a PREFIX. Resolving it beats
+                    # shipping full ids for 229 agents to serve the one that
+                    # gets clicked.
+                    full = agent if len(agent) > 12 else next(
+                        (k for k in reader.subagent_files() if k.startswith(agent)), None)
+                    if full:
+                        events = reader.tool_timeline(full)
+                self._send(json.dumps([
+                    {"at": e.at.isoformat(), "tool": e.tool, "detail": e.detail}
+                    for e in events]).encode(), "application/json; charset=utf-8")
+            elif self.path.startswith("/api/data"):
                 self._send(json.dumps(payload(redact=self.redact)).encode(),
                            "application/json; charset=utf-8")
             elif self.path in ("/", "/index.html"):
