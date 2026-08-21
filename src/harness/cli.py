@@ -31,6 +31,7 @@ from . import (
     paths,
     scan,
     shelve as shelve_mod,
+    update as update_mod,
     tag as tag_mod,
 )
 
@@ -260,6 +261,12 @@ def _cmd_learned(conn, args) -> int:
     return 0
 
 
+def _cmd_update(conn, args) -> int:
+    report = update_mod.check(conn)
+    print(update_mod.render(report))
+    return 1 if report.behind else 0
+
+
 def _cmd_doctor(conn, args) -> int:
     report = doctor_mod.inspect(conn)
     print(doctor_mod.render(report))
@@ -408,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
     p = add("deactivate", "shelve a restored capability again", _cmd_deactivate)
     p.add_argument("name")
 
+    add("update", "report which plugins are behind their marketplace", _cmd_update)
     add("doctor", "check the vault and installation for drift", _cmd_doctor)
     p = add("learned", "what usage has taught the harness about itself", _cmd_learned)
     p.add_argument("--here", action="store_true", help="only this project's signal")
