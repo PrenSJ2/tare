@@ -295,8 +295,7 @@ def _cmd_viewer(conn, args) -> int:
             print("needs `npx` on PATH — install Node.js first", file=sys.stderr)
             return 1
         viewer_mod.ensure(args.port)
-        print(f"starting the viewer; it will come up at {viewer_mod.url(args.port)}")
-        print("first run downloads agent-flow, which takes a few seconds")
+        print(f"starting the console; it will come up at {viewer_mod.url(args.port)}")
         return 0
     print(f"viewer: {viewer_mod.status(args.port)}")
     return 0

@@ -47,15 +47,15 @@ HOST = "127.0.0.1"
 # server -- and one of those had owned the port here for three days. Picking a
 # less contested default avoids a collision that is invisible until you notice
 # the viewer is empty.
-DEFAULT_PORT = 3737
-DISCOVERY_DIR_NAME = "agent-flow"
-PACKAGE = "agent-flow-app"
-
-# `npx -y agent-flow-app` resolves to whatever npx already has cached and never
-# checks npm again -- so a viewer installed once stays on that version forever.
-# Pinning `@latest` is what makes this a real upstream dependency: harness does
-# not vendor or fork agent-flow, it runs whatever upstream currently publishes.
-SPEC = f"{PACKAGE}@latest"
+DEFAULT_PORT = 3939
+# The UI is tare's own fork of agent-flow (Apache-2.0), built locally rather
+# than fetched: it carries the Skills and Memory panels, which upstream has no
+# reason to want. Upstream stays tracked as a git remote in that repo, so their
+# improvements can still be merged.
+PACKAGE = "tare-console"
+FORK_DIR_ENV = "TARE_CONSOLE_DIR"
+DEFAULT_FORK_DIRS = ("~/Documents/Code/agent-flow",)
+DISCOVERY_DIR_NAME = "tare-console"
 
 # Set to anything to stop harness touching the viewer at all.
 DISABLE_ENV = "TARE_NO_VIEWER"
@@ -117,9 +117,31 @@ def url(port: int = DEFAULT_PORT) -> str:
     return f"http://{HOST}:{port}/"
 
 
+def fork_build() -> Path | None:
+    """The built console bundle, if it is there.
+
+    Looked up rather than vendored so the UI stays a normal git checkout that
+    can pull from upstream, instead of a copy that silently drifts.
+    """
+    override = os.environ.get(FORK_DIR_ENV)
+    if override:
+        # Authoritative, not a hint. Falling through to the defaults when an
+        # explicit override has no build there would silently run a DIFFERENT
+        # console than the one asked for -- the surprise is worse than the
+        # failure.
+        roots = [Path(override).expanduser()]
+    else:
+        roots = [Path(d).expanduser() for d in DEFAULT_FORK_DIRS]
+    for root in roots:
+        built = root / "app" / "dist" / "app.js"
+        if built.is_file():
+            return built
+    return None
+
+
 def available() -> bool:
-    """Can the viewer be launched at all? Requires npx on PATH."""
-    return shutil.which("npx") is not None
+    """Can the console be launched? Needs node and a built bundle."""
+    return shutil.which("node") is not None and fork_build() is not None
 
 
 def workspace_root() -> Path:
@@ -142,7 +164,10 @@ def workspace_root() -> Path:
 
 
 def _spawn(port: int, *, open_browser: bool) -> bool:
-    args = ["npx", "-y", SPEC, "--port", str(port)]
+    built = fork_build()
+    if built is None:
+        return False
+    args = ["node", str(built), "--port", str(port)]
     if not open_browser:
         args.append("--no-open")
     try:
@@ -177,7 +202,7 @@ def ensure(port: int = DEFAULT_PORT) -> bool:
         return False
 
 
-def versions() -> tuple[str | None, str | None]:
+def _unused_versions() -> tuple[str | None, str | None]:
     """(cached, latest) versions of the viewer, or (None, None) if unknown.
 
     Reported rather than acted on, for the same reason `tare update` reports
@@ -215,12 +240,9 @@ def status(port: int = DEFAULT_PORT) -> str:
         for inst in live:
             covers = inst.get("workspace", "?")
             lines.append(f"running at {url(port)}  (watching {covers})")
-        cached, latest = versions()
-        if cached and latest and cached != latest:
-            lines.append(f"  {PACKAGE} {cached} cached, {latest} published — "
-                         f"restart it to pick the new one up")
-        elif cached:
-            lines.append(f"  {PACKAGE} {cached} (upstream, not vendored)")
+        built = fork_build()
+        if built:
+            lines.append(f"  {PACKAGE} from {built.parents[2]}")
         return "\n".join(lines)
 
     if port_in_use(port):
@@ -228,5 +250,8 @@ def status(port: int = DEFAULT_PORT) -> str:
         return (f"not running — and something else already holds port {port}. "
                 f"Start it elsewhere: `tare viewer --start --port {port + 1}`")
     if not available():
-        return "not running — needs `npx` on PATH (install Node.js)"
+        if shutil.which("node") is None:
+            return "not running — needs `node` on PATH"
+        return ("not running — the console is not built. In the fork: "
+                "`pnpm install && pnpm run build:app`")
     return "not running — start it with `tare viewer --start`"

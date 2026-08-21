@@ -113,29 +113,32 @@ def test_the_workspace_is_an_ancestor_of_every_project(monkeypatch):
     assert viewer.workspace_root() == Path.home()
 
 
-def test_the_spawn_pins_latest_not_the_npx_cache():
-    """`npx -y pkg` reuses whatever npx cached and never re-checks npm, so a
-    viewer installed once would stay on that version forever -- which is not an
-    upstream dependency, it is an accidental vendoring."""
-    assert viewer.SPEC.endswith("@latest")
+def test_the_console_is_a_local_build_not_a_fetched_package(tmp_path, monkeypatch):
+    """The UI is tare's own fork, built locally. Looked up rather than vendored
+    so it stays a git checkout that can still merge from upstream."""
+    monkeypatch.setenv(viewer.FORK_DIR_ENV, str(tmp_path))
+    assert viewer.fork_build() is None, "no build present yet"
+
+    built = tmp_path / "app" / "dist"
+    built.mkdir(parents=True)
+    (built / "app.js").write_text("//")
+    assert viewer.fork_build() == built / "app.js"
 
 
-def test_status_reports_upstream_drift(monkeypatch, tmp_path):
+def test_status_names_where_the_build_came_from(monkeypatch, tmp_path):
     import json, os
     (tmp_path / "live.json").write_text(
         json.dumps({"pid": os.getpid(), "port": 1234, "workspace": str(tmp_path)}))
     monkeypatch.setattr(viewer, "_discovery_dir", lambda: tmp_path)
-    monkeypatch.setattr(viewer, "versions", lambda: ("0.9.1", "1.2.0"))
+    monkeypatch.setattr(viewer, "fork_build", lambda: tmp_path / "app" / "dist" / "app.js")
     monkeypatch.delenv(viewer.DISABLE_ENV, raising=False)
-    out = viewer.status()
-    assert "0.9.1 cached, 1.2.0 published" in out
+    assert "tare-console from" in viewer.status()
 
 
-def test_status_says_it_is_upstream_when_current(monkeypatch, tmp_path):
-    import json, os
-    (tmp_path / "live.json").write_text(
-        json.dumps({"pid": os.getpid(), "port": 1234, "workspace": str(tmp_path)}))
+def test_status_says_how_to_build_when_missing(monkeypatch, tmp_path):
+    """Not built is an ordinary state with an ordinary fix -- say the fix."""
     monkeypatch.setattr(viewer, "_discovery_dir", lambda: tmp_path)
-    monkeypatch.setattr(viewer, "versions", lambda: ("1.0.0", "1.0.0"))
+    monkeypatch.setattr(viewer, "port_in_use", lambda port: False)
+    monkeypatch.setattr(viewer, "fork_build", lambda: None)
     monkeypatch.delenv(viewer.DISABLE_ENV, raising=False)
-    assert "not vendored" in viewer.status()
+    assert "pnpm run build:app" in viewer.status()
