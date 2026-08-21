@@ -32,6 +32,7 @@ from . import (
     scan,
     shelve as shelve_mod,
     update as update_mod,
+    viewer as viewer_mod,
     tag as tag_mod,
 )
 
@@ -148,6 +149,14 @@ def _cmd_hookline(conn, args) -> int:
     correct failure mode for this command and this command only.
     """
     try:
+        # Best effort, silent, non-blocking: if the viewer is already up this
+        # is a single refused-or-accepted socket check. Set HARNESS_NO_VIEWER
+        # to opt out entirely.
+        viewer_mod.ensure()
+    except Exception:
+        pass
+
+    try:
         rows = conn.execute(
             "SELECT kind, tags FROM nodes WHERE state = 'vaulted'"
         ).fetchall()
@@ -258,6 +267,22 @@ def _cmd_learned(conn, args) -> int:
             print(f"  {name[:38]:38s} {used}{where}")
         print("\nHow a tool is configured per project belongs in that project's")
         print("CLAUDE.md -- this only knows what you use where.")
+    return 0
+
+
+def _cmd_viewer(conn, args) -> int:
+    if args.stop:
+        print("stop it in the terminal running it, or: pkill -f agent-flow-app")
+        return 0
+    if args.start and not viewer_mod.is_up(args.port):
+        if not viewer_mod.available():
+            print("needs `npx` on PATH — install Node.js first", file=sys.stderr)
+            return 1
+        viewer_mod.ensure(args.port)
+        print(f"starting the viewer; it will come up at {viewer_mod.url(args.port)}")
+        print("first run downloads agent-flow, which takes a few seconds")
+        return 0
+    print(f"viewer: {viewer_mod.status(args.port)}")
     return 0
 
 
@@ -416,6 +441,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("name")
 
     add("update", "report which plugins are behind their marketplace", _cmd_update)
+    p = add("viewer", "the live agent-flow fleet viewer", _cmd_viewer)
+    p.add_argument("--start", action="store_true", help="start it if it is not up")
+    p.add_argument("--stop", action="store_true")
+    p.add_argument("--port", type=int, default=viewer_mod.DEFAULT_PORT)
     add("doctor", "check the vault and installation for drift", _cmd_doctor)
     p = add("learned", "what usage has taught the harness about itself", _cmd_learned)
     p.add_argument("--here", action="store_true", help="only this project's signal")
