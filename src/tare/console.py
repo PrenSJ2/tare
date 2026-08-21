@@ -35,6 +35,7 @@ import json
 import os
 import socket
 import sqlite3
+import shutil
 import subprocess
 import sys
 import threading
@@ -69,7 +70,7 @@ def _reader():
 
 def _graph(conn: sqlite3.Connection) -> dict:
     nodes = [dict(r) for r in conn.execute(
-        "SELECT id,kind,name,origin,state,est_tokens,purpose_line,provider_plugin,tags "
+        "SELECT id,kind,name,origin,state,est_tokens,purpose_line,provider_plugin,tags,path "
         "FROM nodes")]
     usage = {r["node_id"]: r["invocations"]
              for r in conn.execute("SELECT node_id, invocations FROM usage")}
@@ -83,6 +84,10 @@ def _graph(conn: sqlite3.Connection) -> dict:
         "nodes": [{"i": n["id"], "n": n["name"], "k": n["kind"], "o": n["origin"],
                    "s": n["state"], "t": n["est_tokens"] or 0, "u": usage.get(n["id"], 0),
                    "p": (n["purpose_line"] or "")[:140], "pl": n["provider_plugin"],
+                   # Where it actually lives. Home-shortened for display; the
+                   # server keeps the real path, so nothing has to be sent back
+                   # to open it -- see `/api/open`.
+                   "f": _short_path(n["path"]),
                    "d": domain, "dw": why}
                   for n in nodes
                   for domain, why in (categories.explain(
@@ -91,6 +96,42 @@ def _graph(conn: sqlite3.Connection) -> dict:
         # and a dangling edge would silently vanish a node from the layout.
         "edges": [{"s": s, "d": d} for s, d in edges if s in ids and d in ids],
     }
+
+
+def _short_path(path: str | None) -> str:
+    if not path:
+        return ""
+    home = str(Path.home())
+    return path.replace(home, "~", 1) if path.startswith(home) else path
+
+
+def open_capability(node_id: str) -> tuple[bool, str]:
+    """Open a capability's file in whatever the machine opens it with.
+
+    The id is resolved to a path THROUGH THE DATABASE rather than taking a
+    path from the caller. That is the whole security design: the only things
+    this can open are capabilities already in the graph, so a stray local page
+    POSTing here cannot name a file of its own choosing.
+    """
+    conn = db.connect()
+    try:
+        row = conn.execute("SELECT path FROM nodes WHERE id = ?", (node_id,)).fetchone()
+    finally:
+        conn.close()
+    if row is None or not row["path"]:
+        return False, "no such capability"
+    target = Path(row["path"])
+    if not target.exists():
+        return False, f"{_short_path(str(target))} is not on disk"
+
+    opener = "open" if sys.platform == "darwin" else "xdg-open"
+    if shutil.which(opener) is None:
+        return False, f"no {opener} on PATH"
+    try:
+        subprocess.run([opener, str(target)], check=False, timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
+    return True, _short_path(str(target))
 
 
 def _orchestration(redact: bool) -> dict:
@@ -243,6 +284,36 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", origin)
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self) -> None:  # noqa: N802 - name fixed by the base class
+        """Only `/api/open`, and only for a capability already in the graph."""
+        try:
+            if not self.path.startswith("/api/open"):
+                self.send_error(404)
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            ok, detail = open_capability(str(body.get("id") or ""))
+            self._send(json.dumps({"ok": ok, "detail": detail}).encode(),
+                       "application/json; charset=utf-8")
+        except BrokenPipeError:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            try:
+                self.send_error(500, str(exc))
+            except Exception:
+                pass
+
+    def do_OPTIONS(self) -> None:  # noqa: N802 - name fixed by the base class
+        # The UI is on its own loopback port, so the open request is a
+        # cross-origin POST and the browser preflights it.
+        self.send_response(204)
+        origin = self.headers.get("Origin", "")
+        if origin.startswith("http://127.0.0.1:") or origin.startswith("http://localhost:"):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802 - name fixed by the base class
         try:
