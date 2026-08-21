@@ -147,7 +147,13 @@ def _activate_node(conn, node) -> dict:
     # leaving it stale until the next `harness scan`.
     conn.execute("UPDATE nodes SET state='live' WHERE id = ?", (node_id,))
     conn.commit()
-    return {"ok": True, "action": "restore", "id": node_id, "message": f"restored {node_id}"}
+    # `was` is what the memory needs to tell a genuine shelving mistake from a
+    # no-op: an activation from 'vaulted' says the vault got this one wrong,
+    # which is the most useful thing this tool can learn about its own
+    # judgement. Without it every activation records `was: null` and the signal
+    # is silently dropped.
+    return {"ok": True, "action": "restore", "id": node_id, "was": "vaulted",
+            "message": f"restored {node_id}"}
 
 
 def _activate_plugin(conn, name: str) -> dict:
@@ -200,7 +206,8 @@ def _activate_plugin(conn, name: str) -> dict:
             f"; un-promoted {len(unpromoted)} skill(s) that were symlinked onto the load path "
             f"so {plugin_key} is not served twice: {', '.join(sorted(unpromoted))}"
         )
-    return {"ok": True, "action": "enable-plugin", "id": plugin_key, "message": message, "unpromoted": unpromoted}
+    return {"ok": True, "action": "enable-plugin", "id": plugin_key, "was": "plugin-disabled",
+            "message": message, "unpromoted": unpromoted}
 
 
 def activate(conn, name: str) -> dict:

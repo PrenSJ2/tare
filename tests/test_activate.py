@@ -375,3 +375,25 @@ def test_deactivate_by_id_resolves_ambiguity(fake_home):
     result = activate.deactivate(conn, "skill:shared")
     assert result["ok"] is True
     assert node(conn, "skill:shared")["state"] == "vaulted"
+
+
+def test_restoring_reports_the_state_it_came_from(fake_home):
+    """Memory cannot tell a shelving mistake from a no-op without this.
+
+    Every activation was recording `was: null`, so `harness learned` never
+    surfaced a single "you un-shelved this, the vault got it wrong" finding --
+    the most useful signal the memory was built for, dropped silently.
+    """
+    from harness import db, vault
+
+    conn = db.connect()
+    src = fake_home / "skills" / "alpha"
+    src.mkdir(parents=True)
+    (src / "SKILL.md").write_text("---\nname: alpha\ndescription: x.\n---\n\nBody.\n")
+    vault.stash(src, "skills")
+    conn.execute("INSERT INTO nodes (id,kind,name,origin,state) "
+                 "VALUES ('skill:alpha','skill','alpha','user-authored','vaulted')")
+    conn.commit()
+
+    result = activate.activate(conn, "alpha")
+    assert result["was"] == "vaulted"
