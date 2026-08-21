@@ -178,6 +178,36 @@ def _orchestration(redact: bool) -> dict:
     }
 
 
+def _shells() -> dict:
+    """What each project is running in a shell right now.
+
+    From swarm, and from the process table rather than transcripts: a
+    transcript records that a background command was launched and never that
+    it finished, so it can only say what was true once.
+
+    Grouped by PROJECT, not by session. A `claude` process exposes its working
+    directory and not its session id, so two sessions in one repository cannot
+    be told apart from outside -- and the payload must not imply otherwise.
+    """
+    try:
+        from swarm import shells as shells_mod  # noqa: PLC0415 - optional dependency
+    except Exception:
+        return {"projects": {}, "services": 0, "unavailable": True}
+    try:
+        found = shells_mod.live()
+    except Exception:
+        return {"projects": {}, "services": 0, "unavailable": True}
+    return {
+        "projects": {
+            project: [{"cmd": s.command[:160], "secs": round(s.seconds), "pid": s.pid}
+                      for s in items]
+            for project, items in shells_mod.by_project(found).items()
+        },
+        "services": sum(1 for s in found if s.kind == "service"),
+        "unavailable": False,
+    }
+
+
 def _fleet(redact: bool) -> dict:
     reader = _reader()
     if reader is None:
@@ -258,6 +288,7 @@ def _build_payload(*, redact: bool = False) -> dict:
         "edges": graph["edges"],
         "memory": mem,
         "history": past,
+        "shells": _shells(),
         "fleet": _fleet(redact),
         "orch": _orchestration(redact),
     }
