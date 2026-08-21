@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 
 from . import paths
 
@@ -85,6 +86,8 @@ def mine(conn) -> MineResult:
     # one transaction rather than interleaved with the file scan.
     usage_acc: dict[str, dict] = {}
     event_rows: list[tuple[str, str, str, str]] = []
+    edit_targets = _edit_targets(conn)
+    edit_rows: list[tuple[str, str, str]] = []
 
     for path in _transcript_paths():
         transcripts += 1
@@ -156,6 +159,19 @@ def mine(conn) -> MineResult:
                 if ts and ts > acc["last_used"]:
                     acc["last_used"] = ts
                 event_rows.append((ts, node_id, name, project))
+            # Same parsed line, second question: did this turn CHANGE a
+            # capability rather than call one? Folded into the existing walk
+            # because a second pass would mean re-reading 1,588 transcripts to
+            # learn something already in hand.
+            for file_path, tool, ts in _edits_in(obj):
+                fs_name = _fs_name(file_path)
+                node_id = edit_targets.get(fs_name) if fs_name else None
+                if node_id is None:
+                    continue
+                edit_rows.append((ts, node_id, json.dumps({
+                    "tool": tool, "project": project, "file": file_path,
+                    "session": Path(session_id).stem,
+                })))
 
     # Rebuild the cache: delete then repopulate, inside the connection's
     # existing transaction, one commit at the end. Never insert a usage row
@@ -164,6 +180,7 @@ def mine(conn) -> MineResult:
     # never-invoked capability apart from one this run simply didn't touch.
     conn.execute("DELETE FROM usage")
     conn.execute("DELETE FROM events WHERE kind = 'invocation'")
+    conn.execute("DELETE FROM events WHERE kind = 'edit'")
     for node_id, acc in usage_acc.items():
         conn.execute(
             "INSERT INTO usage (node_id, invocations, sessions, last_used) "
@@ -174,6 +191,11 @@ def mine(conn) -> MineResult:
         conn.execute(
             "INSERT INTO events (ts, kind, node_id, payload) VALUES (?, 'invocation', ?, ?)",
             (ts, node_id, json.dumps({"name": name, "project": project})),
+        )
+    for ts, node_id, payload in edit_rows:
+        conn.execute(
+            "INSERT INTO events (ts, kind, node_id, payload) VALUES (?, 'edit', ?, ?)",
+            (ts, node_id, payload),
         )
     conn.commit()
 
@@ -244,6 +266,41 @@ def _installed_names(conn):
     return skill_ids, agent_ids
 
 
+def _fs_name(file_path: str) -> str | None:
+    """The capability's filesystem name for any path inside its directory.
+
+    `.../skills/hyperframes-core/reference.md` and
+    `.../vault/skills/hyperframes-core/SKILL.md` both give `hyperframes-core`;
+    `.../agents/rust-pro.md` gives `rust-pro`. One rule covers the live tree,
+    the vault and a plugin cache, which is what makes an edit recorded against
+    the old location still attributable after a move.
+
+    Deliberately the FILESYSTEM name, not the frontmatter name. The two
+    diverge, and every previous place that assumed otherwise had to be fixed.
+    """
+    parts = [p for p in file_path.split("/") if p]
+    for i in range(len(parts) - 2, -1, -1):
+        if parts[i] in ("skills", "agents") and i + 1 < len(parts):
+            leaf = parts[i + 1]
+            return leaf[:-3] if leaf.endswith(".md") else leaf
+    return None
+
+
+def _edit_targets(conn) -> dict[str, str]:
+    """Filesystem name -> node id, for attributing edits.
+
+    A name held by more than one node is dropped rather than guessed at: a
+    misattributed edit history is worse than a short one, because it reads as
+    fact.
+    """
+    seen: dict[str, set[str]] = {}
+    for row in conn.execute("SELECT id, path FROM nodes WHERE path IS NOT NULL"):
+        name = _fs_name(row["path"])
+        if name:
+            seen.setdefault(name, set()).add(row["id"])
+    return {name: next(iter(ids)) for name, ids in seen.items() if len(ids) == 1}
+
+
 def _invocations_in(obj):
     """Yield (kind_hint, name, timestamp) for each capability invocation in
     one already-parsed transcript line."""
@@ -268,6 +325,39 @@ def _invocations_in(obj):
             name = tool_input.get("subagent_type")
             if isinstance(name, str) and name:
                 yield "agent", name, ts
+
+
+# The tools that can change a capability's source. NotebookEdit is here for
+# completeness rather than because a skill has ever been a notebook.
+_EDIT_TOOL_NAMES = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
+
+
+def _edits_in(obj):
+    """Yield (file_path, tool, timestamp) for each edit to a capability file.
+
+    This is the only retroactive evidence that a session changed a skill. It
+    is evidence of *presence*, never of absence: transcripts are deleted,
+    rotated and excluded as tagging exhaust, and a capability edited outside a
+    session (or in one whose transcript is gone) leaves nothing here. Anything
+    built on this must say "no recorded session edit", not "hand-written".
+    """
+    if obj.get("type") != "assistant":
+        return
+    content = obj.get("message", {}).get("content")
+    if not isinstance(content, list):
+        return
+    ts = obj.get("timestamp") or ""
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        if block.get("name") not in _EDIT_TOOL_NAMES:
+            continue
+        tool_input = block.get("input")
+        if not isinstance(tool_input, dict):
+            continue
+        file_path = tool_input.get("file_path") or tool_input.get("notebook_path")
+        if isinstance(file_path, str) and file_path:
+            yield file_path, block["name"], ts
 
 
 def _user_text(obj) -> str:

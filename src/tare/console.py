@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import audit as audit_mod
-from . import categories, db, memory, paths
+from . import categories, db, history, memory, paths
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 4242
@@ -190,6 +190,7 @@ def _build_payload(*, redact: bool = False) -> dict:
     try:
         report = audit_mod.audit(conn)
         graph = _graph(conn)
+        past = history.summary(conn)
         mem = {
             "learned": [{"kind": s.kind, "subject": s.subject, "detail": s.detail,
                          "evidence": s.evidence} for s in memory.suggestions(conn)],
@@ -215,6 +216,7 @@ def _build_payload(*, redact: bool = False) -> dict:
         "nodes": graph["nodes"],
         "edges": graph["edges"],
         "memory": mem,
+        "history": past,
         "fleet": _fleet(redact),
         "orch": _orchestration(redact),
     }

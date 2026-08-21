@@ -25,6 +25,7 @@ from . import (
     console as console_mod,
     db,
     doctor as doctor_mod,
+    history as history_mod,
     edges,
     install as install_mod,
     lookup as lookup_mod,
@@ -142,6 +143,39 @@ def _cmd_domains(conn, args) -> int:
             print(f"  {name}{shelved}{reason}")
         if not wanted and len(members) > len(show):
             print(f"  … {len(members) - len(show)} more -- `tare domains {domain}`")
+    return 0
+
+
+def _cmd_history(conn, args) -> int:
+    """How the configuration got to be the way it is."""
+    s = history_mod.summary(conn)
+    c = s["counts"]
+    print(f"{c['own']} yours, {c['from_plugins']} from plugins")
+    print(f"{c['session_edited']} have a recorded session edit; "
+          f"{c['authored_outside_sessions']} of yours have none")
+    # Said out loud because the obvious reading of that last number is wrong.
+    print("  (no recorded edit is not proof one was hand-written -- transcripts")
+    print("   age out, and an edit made in an editor was never in one)")
+
+    def block(title, key, stamp):
+        rows = s[key]
+        if not rows:
+            return
+        print(f"\n{title}")
+        for e in rows:
+            when = (e[stamp] or "")[:10]
+            where = f"  [{e['s']}]" if e["s"] != "live" else ""
+            plugin = f"  ({e['pl']})" if e["pl"] else ""
+            trail = ""
+            if e["edit_count"]:
+                last = e["edits"][-1]
+                trail = f"  · {e['edit_count']} session edit(s), last {last['tool']} in {last['project']}"
+            print(f"  {when}  {e['n']}{plugin}{where}{trail}")
+
+    block("added (yours, newest first)", "added", "born")
+    block("changed since it was created", "evolved", "changed")
+    block("edited from a session", "session_edited", "last_edit")
+    block("installed with a plugin", "installed", "born")
     return 0
 
 
@@ -480,6 +514,8 @@ def main(argv: list[str] | None = None) -> int:
     p = add("lookup", "find a capability by intent", _cmd_lookup)
     p.add_argument("query")
     p.add_argument("--limit", type=int, default=5)
+
+    add("history", "what was added, what changed, and what a session edited", _cmd_history)
 
     p = add("domains", "what each domain holds, and why", _cmd_domains)
     p.add_argument("domain", nargs="?", help="list one domain in full")
