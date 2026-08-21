@@ -103,3 +103,42 @@ def test_cors_is_granted_only_to_loopback(fake_home):
     src = inspect.getsource(console._Handler._send)
     assert 'startswith("http://127.0.0.1:")' in src
     assert '"*"' not in src
+
+
+def test_the_payload_is_cached_between_polls(fake_home, monkeypatch):
+    """Two panels poll independently. Uncached, assembling this walked
+    thousands of transcripts per request and took over a minute, which showed
+    in the UI as panels stuck on "reading" forever."""
+    calls = []
+    real = console._build_payload
+    monkeypatch.setattr(console, "_build_payload",
+                        lambda **kw: (calls.append(1), real(**kw))[1])
+    console._PAYLOAD_CACHE = None
+    console.payload()
+    console.payload()
+    console.payload()
+    assert len(calls) == 1, "repeated polls must not rebuild the payload"
+
+
+def test_fresh_bypasses_the_cache(fake_home, monkeypatch):
+    calls = []
+    real = console._build_payload
+    monkeypatch.setattr(console, "_build_payload",
+                        lambda **kw: (calls.append(1), real(**kw))[1])
+    console._PAYLOAD_CACHE = None
+    console.payload()
+    console.payload(fresh=True)
+    assert len(calls) == 2
+
+
+def test_redact_is_not_served_from_a_non_redacted_cache(fake_home, monkeypatch):
+    """Serving cached unredacted data to a redacted request would leak exactly
+    what redaction exists to withhold."""
+    console._PAYLOAD_CACHE = None
+    console.payload(redact=False)
+    calls = []
+    real = console._build_payload
+    monkeypatch.setattr(console, "_build_payload",
+                        lambda **kw: (calls.append(kw), real(**kw))[1])
+    console.payload(redact=True)
+    assert calls and calls[0]["redact"] is True

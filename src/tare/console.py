@@ -38,6 +38,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -156,8 +157,28 @@ def _fleet(redact: bool) -> dict:
     return {"generated": now.isoformat(), "projects": projects}
 
 
-def payload(*, redact: bool = False) -> dict:
-    """Everything the page needs, read fresh."""
+# Assembling a payload walks the transcripts and re-queries SQLite -- about
+# 2 seconds on a real corpus. Two panels poll independently, so without this
+# every poll paid that cost twice and the panels sat on "reading" indefinitely.
+# The TTL is short enough that a running agent still appears promptly.
+_PAYLOAD_CACHE: tuple[float, bool, dict] | None = None
+PAYLOAD_TTL_SECONDS = 4.0
+
+
+def payload(*, redact: bool = False, fresh: bool = False) -> dict:
+    """Everything the page needs. Cached briefly; see the note above."""
+    global _PAYLOAD_CACHE
+    now = time.monotonic()
+    if (not fresh and _PAYLOAD_CACHE is not None
+            and _PAYLOAD_CACHE[1] == redact
+            and now - _PAYLOAD_CACHE[0] < PAYLOAD_TTL_SECONDS):
+        return _PAYLOAD_CACHE[2]
+    built = _build_payload(redact=redact)
+    _PAYLOAD_CACHE = (now, redact, built)
+    return built
+
+
+def _build_payload(*, redact: bool = False) -> dict:
     conn = db.connect()
     try:
         report = audit_mod.audit(conn)
