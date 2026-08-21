@@ -21,6 +21,7 @@ from . import (
     activate as activate_mod,
     audit as audit_mod,
     buckets,
+    categories as categories_mod,
     console as console_mod,
     db,
     doctor as doctor_mod,
@@ -106,6 +107,41 @@ def _cmd_lookup(conn, args) -> int:
             print(f"  via: {chain}")
         if r.state == "vaulted":
             print(f"  shelved -- `tare activate {r.name}` brings it back")
+    return 0
+
+
+def _cmd_domains(conn, args) -> int:
+    """What each domain holds, and why each member landed there.
+
+    `lookup` answers "what can do X"; this answers "what is there at all",
+    which is the question you have when you do not yet know what to search for.
+    """
+    rows = list(conn.execute(
+        "SELECT name, kind, state, tags, purpose_line FROM nodes ORDER BY name"))
+    grouped: dict[str, list[tuple[str, str, str | None]]] = {}
+    for row in rows:
+        domain, why = categories_mod.explain(
+            row["name"], row["tags"] or "", row["purpose_line"] or "")
+        grouped.setdefault(domain, []).append((row["name"], row["state"], why))
+
+    wanted = args.domain
+    if wanted and wanted not in grouped:
+        print(f"no domain {wanted!r}. known: {', '.join(sorted(grouped))}")
+        return 1
+
+    for domain, members in sorted(grouped.items(), key=lambda kv: -len(kv[1])):
+        if wanted and domain != wanted:
+            continue
+        print(f"\n{domain}  ({len(members)})")
+        # Listing every member only when one domain is asked for: the whole
+        # table is 200-odd lines, which is the problem this is meant to solve.
+        show = members if wanted else members[:8]
+        for name, state, why in show:
+            shelved = "" if state == "live" else f"  [{state}]"
+            reason = f"  ← {why}" if why else "  ← nothing matched"
+            print(f"  {name}{shelved}{reason}")
+        if not wanted and len(members) > len(show):
+            print(f"  … {len(members) - len(show)} more -- `tare domains {domain}`")
     return 0
 
 
@@ -444,6 +480,9 @@ def main(argv: list[str] | None = None) -> int:
     p = add("lookup", "find a capability by intent", _cmd_lookup)
     p.add_argument("query")
     p.add_argument("--limit", type=int, default=5)
+
+    p = add("domains", "what each domain holds, and why", _cmd_domains)
+    p.add_argument("domain", nargs="?", help="list one domain in full")
 
     add("audit", "token cost, buckets, duplicates", _cmd_audit)
     add("install", "register the tare skill and SessionStart hook", _cmd_install)

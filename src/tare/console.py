@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import audit as audit_mod
-from . import db, memory, paths
+from . import categories, db, memory, paths
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 4242
@@ -69,17 +69,24 @@ def _reader():
 
 def _graph(conn: sqlite3.Connection) -> dict:
     nodes = [dict(r) for r in conn.execute(
-        "SELECT id,kind,name,origin,state,est_tokens,purpose_line,provider_plugin FROM nodes")]
+        "SELECT id,kind,name,origin,state,est_tokens,purpose_line,provider_plugin,tags "
+        "FROM nodes")]
     usage = {r["node_id"]: r["invocations"]
              for r in conn.execute("SELECT node_id, invocations FROM usage")}
     ids = {n["id"] for n in nodes}
     edges = [(r["src"], r["dst"])
              for r in conn.execute("SELECT src, dst FROM edges WHERE type = 'routes-to'")]
     return {
+        # `d` is the domain and `dw` the term that decided it. Both travel with
+        # the node so a surprising grouping can be questioned in the UI rather
+        # than only in a Python shell.
         "nodes": [{"i": n["id"], "n": n["name"], "k": n["kind"], "o": n["origin"],
                    "s": n["state"], "t": n["est_tokens"] or 0, "u": usage.get(n["id"], 0),
-                   "p": (n["purpose_line"] or "")[:140], "pl": n["provider_plugin"]}
-                  for n in nodes],
+                   "p": (n["purpose_line"] or "")[:140], "pl": n["provider_plugin"],
+                   "d": domain, "dw": why}
+                  for n in nodes
+                  for domain, why in (categories.explain(
+                      n["name"], n["tags"] or "", n["purpose_line"] or ""),)],
         # Drop edges whose endpoints are gone: a prune can outrun an edge rebuild,
         # and a dangling edge would silently vanish a node from the layout.
         "edges": [{"s": s, "d": d} for s, d in edges if s in ids and d in ids],
