@@ -5,7 +5,7 @@ its node with `state='vaulted'`; `lookup` is the only thing standing between
 that row and it being effectively deleted from the operator's mental model.
 So `lookup` carries no state filter anywhere -- see `lookup()` below -- and
 every result is labelled with its state so the operator can tell "have it,
-loaded" from "have it, vaulted -- run `harness activate`" apart.
+loaded" from "have it, vaulted -- run `tare activate`" apart.
 
 Ranking is BM25 (via nodes_fts, FTS5's built-in ranking function) with a
 usage prior layered on top. The prior is MULTIPLICATIVE, not additive, and

@@ -164,7 +164,7 @@ def render(report: UpdateReport) -> str:
                 f"{drift.available}, {drift.skills} skill(s){note}"
             )
         lines.append("")
-        lines.append("Update with `/plugin` inside Claude Code, then re-run `harness scan`.")
+        lines.append("Update with `/plugin` inside Claude Code, then re-run `tare scan`.")
 
     if report.unknown:
         lines.append("")

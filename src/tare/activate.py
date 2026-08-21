@@ -137,14 +137,14 @@ def _activate_node(conn, node) -> dict:
             "ok": False,
             "action": "restore",
             "id": node_id,
-            "message": f"failed to restore {node_id}: {exc}; reconcile with `harness scan`",
+            "message": f"failed to restore {node_id}: {exc}; reconcile with `tare scan`",
         }
 
     # The vaulted id and the post-restore live id are the same string for
     # this exact row (both built from the declared name -- see
     # scan._vaulted_node_id / scan._name_and_desc), so flipping this row's
     # state in place keeps the graph immediately consistent instead of
-    # leaving it stale until the next `harness scan`.
+    # leaving it stale until the next `tare scan`.
     conn.execute("UPDATE nodes SET state='live' WHERE id = ?", (node_id,))
     conn.commit()
     # `was` is what the memory needs to tell a genuine shelving mistake from a
@@ -238,7 +238,7 @@ def activate(conn, name: str) -> dict:
             "ok": True,
             "action": "restore",
             "id": node_id,
-            "message": f"restored {node_id} (run `harness scan` to refresh the graph)",
+            "message": f"restored {node_id} (run `tare scan` to refresh the graph)",
         }
 
     return _activate_plugin(conn, name)
@@ -274,7 +274,7 @@ def _deactivate_node(conn, node) -> dict:
             "ok": False,
             "action": "unrestore",
             "id": node_id,
-            "message": f"failed to unrestore {node_id}: {exc}; reconcile with `harness scan`",
+            "message": f"failed to unrestore {node_id}: {exc}; reconcile with `tare scan`",
         }
 
     # Same-row state flip as activate's restore path, for the same reason:
@@ -309,7 +309,7 @@ def deactivate(conn, name: str) -> dict:
             "ok": True,
             "action": "unrestore",
             "id": node_id,
-            "message": f"unrestored {node_id} (run `harness scan` to refresh the graph)",
+            "message": f"unrestored {node_id} (run `tare scan` to refresh the graph)",
         }
 
     try:

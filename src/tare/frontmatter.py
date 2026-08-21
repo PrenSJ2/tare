@@ -2,7 +2,7 @@
 
 Returns None rather than raising when a file has no usable frontmatter. Callers
 turn that into a node carrying a `parse_error`, because the governing rule of
-this project is to degrade and report -- a capability harness cannot read must
+this project is to degrade and report -- a capability tare cannot read must
 still appear in the graph, or the operator is told it does not exist.
 """
 

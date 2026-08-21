@@ -23,7 +23,7 @@ content (permissions, a file removed mid-scan). Every failure mode below is
 counted, never silently swallowed, so an operator told "905 invocations" can
 also be told what was dropped and why.
 
-Known limitation: `harness tag` shells out to `claude -p`, which writes a
+Known limitation: `tare tag` shells out to `claude -p`, which writes a
 transcript per call into this exact corpus -- there is no way to stop that
 short of not shelling out. Those transcripts are excluded by a structural
 signature: a `type: "user"` message whose text opens with TAG_PROMPT_SIGNATURE,
@@ -65,7 +65,7 @@ class MineResult:
     unmatched: int  # DISTINCT names that matched no installed capability
     malformed: int  # lines that were not valid JSON
     unreadable: int  # files that could not be opened at all
-    excluded: int  # harness's own tagging exhaust
+    excluded: int  # tare's own tagging exhaust
     unmatched_names: tuple = ()  # the distinct names themselves, for reporting
 
 
@@ -287,7 +287,7 @@ def _user_text(obj) -> str:
 
 
 def _is_tag_exhaust(parsed: list[dict]) -> bool:
-    """True if this transcript is harness's own `claude -p` tagging call.
+    """True if this transcript is tare's own `claude -p` tagging call.
 
     Structural, not a bare substring scan of the raw file: the signature must
     open a `type: "user"` message, AND the session must contain no assistant

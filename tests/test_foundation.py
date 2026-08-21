@@ -1,11 +1,11 @@
-from harness import db, frontmatter, paths
+from tare import db, frontmatter, paths
 
 
-def test_paths_follow_harness_home(fake_home):
+def test_paths_follow_tare_home(fake_home):
     assert paths.claude_home() == fake_home
     assert paths.db_path().parent == fake_home
     assert paths.vault_dir() == fake_home / "vault"
-    assert paths.skill_install_path() == fake_home / "skills" / "harness" / "SKILL.md"
+    assert paths.skill_install_path() == fake_home / "skills" / "tare" / "SKILL.md"
 
 
 def test_connect_creates_every_table(fake_home):

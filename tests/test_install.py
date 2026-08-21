@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from harness import install, paths
+from tare import install, paths
 
 
-def make_fake_exe(fake_home: Path, name: str = "harness") -> Path:
+def make_fake_exe(fake_home: Path, name: str = "tare") -> Path:
     """A file that stands in for the installed console script -- it must
     exist on disk so is_installed()'s existence check can pass or fail
     deliberately."""
@@ -27,7 +27,7 @@ def make_fake_exe(fake_home: Path, name: str = "harness") -> Path:
     return exe
 
 
-def install_with_fake_exe(monkeypatch, fake_home: Path, name: str = "harness") -> Path:
+def install_with_fake_exe(monkeypatch, fake_home: Path, name: str = "tare") -> Path:
     exe = make_fake_exe(fake_home, name)
     monkeypatch.setattr(install, "_executable_path", lambda: str(exe))
     install.install()
@@ -81,7 +81,7 @@ def test_save_never_leaves_a_torn_file_on_reparse_failure(fake_home, monkeypatch
     # Simulate by making json.loads (the reparse step) blow up and checking
     # the ORIGINAL file survives untouched.
     paths.settings_path().write_text(json.dumps({"old": True}))
-    import harness.install as install_mod
+    import tare.install as install_mod
 
     real_loads = json.loads
     calls = {"n": 0}
@@ -132,9 +132,9 @@ def test_is_installed_false_when_hook_points_at_deleted_binary(fake_home, monkey
 
 
 def test_registered_command_ignores_foreign_hook_with_harness_substring(fake_home):
-    # Rule 3: "/opt/my-harness-tool/bin/run hookline" contains "harness" as a
+    # Rule 3: "/opt/my-harness-tool/bin/run hookline" contains "tare" as a
     # substring and ends with " hookline" -- a substring check would wrongly
-    # treat this as ours. Basename of the command is "run", not "harness".
+    # treat this as ours. Basename of the command is "run", not "tare".
     data = {
         "hooks": {
             "SessionStart": [
@@ -185,7 +185,7 @@ def test_install_writes_skill_file(fake_home, monkeypatch):
     skill_path = paths.skill_install_path()
     assert skill_path.exists()
     text = skill_path.read_text()
-    assert text.startswith("---\nname: harness\n")
+    assert text.startswith("---\nname: tare\n")
 
 
 def test_install_skill_description_is_short(fake_home, monkeypatch):
@@ -200,8 +200,8 @@ def test_install_skill_description_is_short(fake_home, monkeypatch):
 
 
 def test_install_skill_only_mentions_real_subcommands(fake_home, monkeypatch):
-    # Rule 6: every `harness <word>` mentioned in the skill body must be a
-    # real subcommand. The previous build advertised `harness list`, which
+    # Rule 6: every `tare <word>` mentioned in the skill body must be a
+    # real subcommand. The previous build advertised `tare list`, which
     # never existed.
     allowed = {
         "scan", "mine", "tag", "build", "lookup", "audit", "graph",
@@ -254,13 +254,13 @@ def test_install_is_idempotent_no_duplicate_entries(fake_home, monkeypatch):
 
 
 def test_install_replaces_stale_entry_pointing_at_old_executable(fake_home, monkeypatch):
-    old_exe = make_fake_exe(fake_home, "harness")
+    old_exe = make_fake_exe(fake_home, "tare")
     monkeypatch.setattr(install, "_executable_path", lambda: str(old_exe))
     install.install()
 
     new_dir = fake_home / "bin2"
     new_dir.mkdir()
-    new_exe = new_dir / "harness"
+    new_exe = new_dir / "tare"
     new_exe.write_text("#!/bin/sh\n")
     monkeypatch.setattr(install, "_executable_path", lambda: str(new_exe))
     install.install()
@@ -300,7 +300,7 @@ def test_uninstall_leaves_foreign_hooks_untouched(fake_home, monkeypatch):
 
 
 def test_uninstall_does_not_touch_substring_lookalike_hook(fake_home):
-    # Rule 3, from uninstall's side: a foreign command containing "harness"
+    # Rule 3, from uninstall's side: a foreign command containing "tare"
     # as a substring and ending in " hookline" must survive uninstall.
     lookalike = {"matcher": "", "hooks": [{"type": "command", "command": "/opt/my-harness-tool/bin/run hookline"}]}
     paths.settings_path().write_text(json.dumps({"hooks": {"SessionStart": [lookalike]}}))
@@ -358,7 +358,7 @@ def test_save_propagates_write_failures(fake_home, monkeypatch):
     def boom(*a, **kw):
         raise OSError("simulated disk full")
 
-    monkeypatch.setattr("harness.install.tempfile.mkstemp", boom)
+    monkeypatch.setattr("tare.install.tempfile.mkstemp", boom)
     with pytest.raises(OSError):
         install._save({"a": 1})
 
@@ -366,16 +366,16 @@ def test_save_propagates_write_failures(fake_home, monkeypatch):
 def test_the_skill_only_names_commands_that_exist(fake_home, capsys):
     """The skill is the one artifact the vault gate exists to guarantee.
 
-    A previous build shipped it advertising `harness list`, which was never a
-    subcommand, and the rebuild reintroduced `harness graph`. Both times the
+    A previous build shipped it advertising `tare list`, which was never a
+    subcommand, and the rebuild reintroduced `tare graph`. Both times the
     file telling Claude how to reach ~60 shelved capabilities named a command
     that exits 2.
     """
     import re
 
-    from harness import cli, install
+    from tare import cli, install
 
-    named = set(re.findall(r"`harness ([a-z-]+)", install._SKILL_BODY))
+    named = set(re.findall(r"`tare ([a-z-]+)", install._SKILL_BODY))
     assert named, "the skill should name some commands"
 
     missing = []

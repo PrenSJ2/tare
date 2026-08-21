@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from harness import db, doctor, install, paths, scan, vault
+from tare import db, doctor, install, paths, scan, vault
 
 
 def make_skill(base: Path, name: str, *, frontmatter_name: str | None = None) -> Path:
@@ -42,7 +42,7 @@ def full_scan(conn) -> None:
 def install_with_fake_exe(monkeypatch, fake_home: Path) -> Path:
     exe_dir = fake_home / "bin"
     exe_dir.mkdir(exist_ok=True)
-    exe = exe_dir / "harness"
+    exe = exe_dir / "tare"
     exe.write_text("#!/bin/sh\n")
     monkeypatch.setattr(install, "_executable_path", lambda: str(exe))
     install.install()
@@ -63,7 +63,7 @@ def test_inspect_creates_nothing_when_vault_never_existed(fake_home):
     before = set(fake_home.rglob("*"))
     report = doctor.inspect(conn)
     after = set(fake_home.rglob("*"))
-    # harness.db itself is allowed (db.connect() created it before inspect
+    # tare.db itself is allowed (db.connect() created it before inspect
     # ran) -- nothing new besides what already existed must appear.
     assert after == before
     assert not paths.vault_dir().exists()
@@ -166,7 +166,7 @@ def test_inspect_flags_restored_entry_with_missing_symlink(fake_home):
     report = doctor.inspect(conn)
     findings = findings_by_check(report, "restored-symlink-missing")
     assert len(findings) == 1
-    assert "harness activate foo" in findings[0].fix
+    assert "tare activate foo" in findings[0].fix
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +181,7 @@ def test_inspect_flags_vaulted_entry_missing_from_graph(fake_home):
     report = doctor.inspect(conn)
     findings = findings_by_check(report, "vaulted-without-node")
     assert len(findings) == 1
-    assert "harness scan" in findings[0].fix
+    assert "tare scan" in findings[0].fix
 
 
 def test_inspect_does_not_flag_vaulted_entry_present_in_graph(fake_home):
@@ -227,8 +227,8 @@ def test_inspect_flags_a_promoted_symlink_whose_target_is_gone(fake_home):
     report = doctor.inspect(conn)
     findings = findings_by_check(report, "stale-promoted-symlink")
     assert len(findings) == 1
-    # `harness activate` no-ops on a live node, so it must not be the advice.
-    assert "harness activate" not in findings[0].fix
+    # `tare activate` no-ops on a live node, so it must not be the advice.
+    assert "tare activate" not in findings[0].fix
 
 
 def test_a_promoted_skill_whose_plugin_is_disabled_is_NOT_a_finding(fake_home):
@@ -372,7 +372,7 @@ def test_render_separates_errors_from_warnings(fake_home):
 def test_a_vaulted_entry_that_is_also_a_real_file_on_the_load_path_is_reported(fake_home):
     """Restoring a vault by hand leaves the manifest claiming the capability is
     shelved while it is actually loaded -- found on the real machine, 63 times."""
-    from harness import db, doctor, vault
+    from tare import db, doctor, vault
 
     conn = db.connect()
     src = fake_home / "skills" / "alpha"
@@ -392,7 +392,7 @@ def test_a_vaulted_entry_that_is_also_a_real_file_on_the_load_path_is_reported(f
 
 def test_a_restored_symlink_is_not_reported_as_shelved_but_loaded(fake_home):
     """A symlink is a restore, which another check owns -- do not cry wolf."""
-    from harness import db, doctor, vault
+    from tare import db, doctor, vault
 
     conn = db.connect()
     src = fake_home / "skills" / "beta"

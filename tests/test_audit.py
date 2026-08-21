@@ -13,7 +13,7 @@ import sqlite3
 
 import pytest
 
-from harness import audit, db, paths
+from tare import audit, db, paths
 
 
 def _insert_node(
@@ -254,7 +254,7 @@ def test_coverage_reports_gap_for_unclassified_skill_md_layout(fake_home):
 
 def test_coverage_when_home_directory_missing_reports_zero_zero(fake_home, monkeypatch):
     conn = db.connect()
-    monkeypatch.setenv("HARNESS_HOME", str(fake_home / "does-not-exist"))
+    monkeypatch.setenv("TARE_HOME", str(fake_home / "does-not-exist"))
     a = audit.audit(conn)
     assert a.coverage == (0, 0)
 
@@ -335,9 +335,9 @@ def golden_safe_home(tmp_path, monkeypatch):
     paths.claude_home()) -- these golden-db tests must NOT let that fall
     through to the operator's real ~/.claude just because the golden-db
     node rows happen to carry real ~/.claude paths from before the loss.
-    Point HARNESS_HOME at an empty scratch dir so coverage reads nothing
+    Point TARE_HOME at an empty scratch dir so coverage reads nothing
     real; the golden connection itself is opened separately, unaffected."""
-    monkeypatch.setenv("HARNESS_HOME", str(tmp_path / "not-real-claude-home"))
+    monkeypatch.setenv("TARE_HOME", str(tmp_path / "not-real-claude-home"))
 
 
 @pytestmark_golden
@@ -370,7 +370,7 @@ def test_audit_counts_project_instruction_files(fake_home, monkeypatch):
     nearly four times the whole capability index -- and auditing capabilities
     while ignoring it measures the smaller half of the problem.
     """
-    from harness import audit as audit_mod
+    from tare import audit as audit_mod
 
     project = fake_home.parent / "myproject"
     project.mkdir()
@@ -386,7 +386,7 @@ def test_audit_counts_project_instruction_files(fake_home, monkeypatch):
 
 
 def test_a_heavy_instruction_file_is_called_out(fake_home, monkeypatch):
-    from harness import audit as audit_mod
+    from tare import audit as audit_mod
 
     monkeypatch.setattr(audit_mod, "project_instructions",
                         lambda: [(40000, 2800, "homelab", "CLAUDE.md")])
@@ -397,7 +397,7 @@ def test_a_heavy_instruction_file_is_called_out(fake_home, monkeypatch):
 
 
 def test_no_instruction_files_adds_no_noise(fake_home, monkeypatch):
-    from harness import audit as audit_mod
+    from tare import audit as audit_mod
 
     monkeypatch.setattr(audit_mod, "project_instructions", lambda: [])
     conn = db.connect()

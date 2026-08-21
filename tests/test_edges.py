@@ -1,4 +1,4 @@
-from harness import db, edges
+from tare import db, edges
 
 
 def _insert_node(

@@ -13,7 +13,7 @@ import stat
 
 import pytest
 
-from harness import db, mine, paths
+from tare import db, mine, paths
 
 
 def _write_jsonl(path, lines):

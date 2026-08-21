@@ -87,13 +87,13 @@ def _require_usage_evidence(conn) -> None:
     Checked unconditionally at the top of every apply path, before any
     candidate is even computed, so it can never be dodged by a plan that
     happens to come out empty. `dry_run` never calls this: a preview must
-    still be listable on a machine that has never run `harness mine`.
+    still be listable on a machine that has never run `tare mine`.
     """
     (count,) = conn.execute("SELECT COUNT(*) FROM usage").fetchone()
     if count == 0:
         raise RuntimeError(
             "no invocation events recorded in the database -- refusing to apply with zero "
-            "usage evidence, since every capability would look equally cold; run `harness mine` first"
+            "usage evidence, since every capability would look equally cold; run `tare mine` first"
         )
 
 

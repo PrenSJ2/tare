@@ -22,7 +22,7 @@ has to behave like one:
   Every path here is silent and swallows its exceptions.
 - **Never install anything implicitly.** `ensure()` starts a viewer that is
   already available; it does not fetch one. First use is an explicit
-  `harness viewer --start`, so nothing arrives on the machine unasked.
+  `tare viewer --start`, so nothing arrives on the machine unasked.
 
 ## What it costs
 
@@ -58,7 +58,7 @@ PACKAGE = "agent-flow-app"
 SPEC = f"{PACKAGE}@latest"
 
 # Set to anything to stop harness touching the viewer at all.
-DISABLE_ENV = "HARNESS_NO_VIEWER"
+DISABLE_ENV = "TARE_NO_VIEWER"
 
 
 def _discovery_dir() -> Path:
@@ -138,7 +138,7 @@ def workspace_root() -> Path:
     Spawning from home makes the workspace an ancestor of every project, which
     is what "see all the agents across my projects" actually requires.
     """
-    return Path(os.environ.get("HARNESS_VIEWER_ROOT") or Path.home())
+    return Path(os.environ.get("TARE_VIEWER_ROOT") or Path.home())
 
 
 def _spawn(port: int, *, open_browser: bool) -> bool:
@@ -180,7 +180,7 @@ def ensure(port: int = DEFAULT_PORT) -> bool:
 def versions() -> tuple[str | None, str | None]:
     """(cached, latest) versions of the viewer, or (None, None) if unknown.
 
-    Reported rather than acted on, for the same reason `harness update` reports
+    Reported rather than acted on, for the same reason `tare update` reports
     plugin drift rather than upgrading: knowing you are three versions behind is
     useful, and silently changing a running tool underneath someone is not.
     """
@@ -226,7 +226,7 @@ def status(port: int = DEFAULT_PORT) -> str:
     if port_in_use(port):
         # Say this explicitly. It is the failure that looks like success.
         return (f"not running — and something else already holds port {port}. "
-                f"Start it elsewhere: `harness viewer --start --port {port + 1}`")
+                f"Start it elsewhere: `tare viewer --start --port {port + 1}`")
     if not available():
         return "not running — needs `npx` on PATH (install Node.js)"
-    return "not running — start it with `harness viewer --start`"
+    return "not running — start it with `tare viewer --start`"

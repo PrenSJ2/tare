@@ -1,7 +1,10 @@
-# harness
+# tare
+
+> **tare** *(n.)* the weight of a container, deducted to find the weight
+> of the contents.
 
 Most of a Claude Code configuration is listed in every prompt and almost never
-used. `harness` inventories what you have, mines your own transcripts for what
+used. `tare` inventories what you have, mines your own transcripts for what
 you actually invoke, and moves the rest off the always-loaded path — while
 keeping every bit of it findable.
 
@@ -14,7 +17,7 @@ after    ~10,191 tokens per turn
 
 Nothing was deleted. 64 capabilities moved into a git-backed vault, 28 plugin
 skills were promoted onto the load path, three wholly-unused plugins were
-switched off, and `harness lookup` still returns all of them.
+switched off, and `tare lookup` still returns all of them.
 
 ## The bargain
 
@@ -28,23 +31,23 @@ directly.
 
 ```bash
 uv tool install --editable .
-harness install      # writes the lookup skill and a SessionStart hook
-harness build        # scan + mine + tag + edges + buckets + index
-harness audit        # what your always-loaded context costs
+tare install      # writes the lookup skill and a SessionStart hook
+tare build        # scan + mine + tag + edges + buckets + index
+tare audit        # what your always-loaded context costs
 ```
 
-`harness install` comes first and is not optional: the skill and hook are what
+`tare install` comes first and is not optional: the skill and hook are what
 make a shelved capability reachable, so `vault --apply` refuses to run without
 them.
 
 ## Shelving
 
 ```bash
-harness vault              # dry run — what would be shelved, and what it saves
-harness vault --apply      # do it
-harness activate <name>    # bring one back
-harness deactivate <name>  # shelve it again
-harness doctor             # check nothing has drifted
+tare vault              # dry run — what would be shelved, and what it saves
+tare vault --apply      # do it
+tare activate <name>    # bring one back
+tare deactivate <name>  # shelve it again
+tare doctor             # check nothing has drifted
 ```
 
 Dry run is the default everywhere, and it is a faithful preview: both modes run
@@ -82,9 +85,9 @@ depending on it.
 ## What it learns from being used
 
 ```bash
-harness learned             # gaps, wrong shelving decisions, evidence
-harness learned --here      # narrowed to this project
-harness learned --projects  # what each project leans on
+tare learned             # gaps, wrong shelving decisions, evidence
+tare learned --here      # narrowed to this project
+tare learned --projects  # what each project leans on
 ```
 
 Every other memory system for coding agents remembers *facts* — project
@@ -118,11 +121,11 @@ Three kinds, three homes, no duplication:
 
 | | where | measured by |
 |---|---|---|
-| what you use, and where | its own event log, per project | `harness learned` |
-| how tools are configured here | that project's `CLAUDE.md` | `harness learned --here` points at it |
-| general project knowledge | that project's `CLAUDE.md` | `harness audit` costs it |
+| what you use, and where | its own event log, per project | `tare learned` |
+| how tools are configured here | that project's `CLAUDE.md` | `tare learned --here` points at it |
+| general project knowledge | that project's `CLAUDE.md` | `tare audit` costs it |
 
-`harness` deliberately does not store project facts. They already have a home
+`tare` deliberately does not store project facts. They already have a home
 that sits beside the code it describes and goes stale visibly; copying them
 into a database would create a third source of truth, and the copy is what
 rots.
@@ -135,25 +138,25 @@ capabilities while ignoring that measures the smaller half of the problem.
 ## Everything else
 
 ```
-harness scan     read ~/.claude into the node table
-harness mine     mine transcripts for real usage
-harness tag      normalise descriptions (hash-cached)
-harness build    all of the above, plus edges, buckets and the search index
-harness doctor   check the vault and installation for drift
+tare scan     read ~/.claude into the node table
+tare mine     mine transcripts for real usage
+tare tag      normalise descriptions (hash-cached)
+tare build    all of the above, plus edges, buckets and the search index
+tare doctor   check the vault and installation for drift
 ```
 
 ## Known limitations
 
-- **`harness tag` shells out to `claude -p`**, which writes a transcript into
+- **`tare tag` shells out to `claude -p`**, which writes a transcript into
   the very corpus `mine` reads. It cannot be prevented while shelling out;
   those sessions are excluded by signature and the count is reported.
-- **Not every plugin layout is reached.** `harness audit` prints a coverage
+- **Not every plugin layout is reached.** `tare audit` prints a coverage
   line naming how many `SKILL.md` files it could not classify. A stated gap is
   a limitation; an unstated one is a wrong answer.
 - **`update` and `graph` are not implemented** — upstream drift reporting and
   the HTML export.
 - **`deactivate` cannot re-disable a plugin.** Re-enabling one is a settings
-  change, not a vaulted file; `harness vault --apply` will disable it again.
+  change, not a vaulted file; `tare vault --apply` will disable it again.
 
 ## Notes for anyone working on this
 

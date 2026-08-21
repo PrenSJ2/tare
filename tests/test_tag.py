@@ -1,4 +1,4 @@
-from harness import db, mine, tag
+from tare import db, mine, tag
 
 
 def seed(conn, node_id="skill:a", name="a", desc="Does a thing in prose."):

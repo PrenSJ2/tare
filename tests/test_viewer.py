@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import socket
 
-from harness import viewer
+from tare import viewer
 
 
 def test_ensure_does_not_spawn_when_something_is_already_listening(monkeypatch):
@@ -71,7 +71,7 @@ def test_status_explains_itself_when_down(monkeypatch, tmp_path):
     monkeypatch.setattr(viewer, "_discovery_dir", lambda: tmp_path)
     monkeypatch.setattr(viewer, "port_in_use", lambda port: False)
     monkeypatch.setattr(viewer, "available", lambda: True)
-    assert "harness viewer --start" in viewer.status()
+    assert "tare viewer --start" in viewer.status()
 
 
 def test_a_stranger_on_the_port_is_not_the_viewer(monkeypatch, tmp_path):
@@ -108,7 +108,7 @@ def test_a_live_discovery_file_counts(monkeypatch, tmp_path):
 def test_the_workspace_is_an_ancestor_of_every_project(monkeypatch):
     """agent-flow's hook drops any event whose cwd is outside the registered
     workspace, so a per-project workspace loses every other project silently."""
-    monkeypatch.delenv("HARNESS_VIEWER_ROOT", raising=False)
+    monkeypatch.delenv("TARE_VIEWER_ROOT", raising=False)
     from pathlib import Path
     assert viewer.workspace_root() == Path.home()
 

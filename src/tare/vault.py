@@ -120,7 +120,7 @@ def _declared_name(key: str, kind: str) -> str | None:
     """The frontmatter `name` of a vaulted entry, or None if the file is
     missing or will not parse. Falling back to None (and letting the caller
     fall back to the filesystem key) is deliberate: this is the recovery
-    path, and a capability harness cannot read must still resolve by its
+    path, and a capability tare cannot read must still resolve by its
     filesystem name rather than disappear.
     """
     path = _manifest_source_path(key, kind)

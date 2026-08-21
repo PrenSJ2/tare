@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from harness import console, db
+from tare import console, db
 
 
 def test_it_binds_loopback_only():
@@ -54,7 +54,7 @@ def test_edges_with_a_missing_endpoint_are_dropped(fake_home):
 
 def test_the_page_is_packaged_and_self_contained():
     """A strict local page: no CDN, no external fetch."""
-    html = (console.Path(__file__).parent.parent / "src" / "harness" / "web" / "console.html").read_text()
+    html = (console.Path(__file__).parent.parent / "src" / "tare" / "web" / "console.html").read_text()
     assert "<canvas" in html and "/api/data" in html
     for bad in ("http://cdn", "https://cdn", "unpkg.com", "googleapis.com"):
         assert bad not in html
@@ -94,3 +94,12 @@ def test_orchestration_skips_sessions_with_no_agents(fake_home, monkeypatch):
 def test_orchestration_is_empty_without_swarm(fake_home, monkeypatch):
     monkeypatch.setattr(console, "_reader", lambda: None)
     assert console._orchestration(False)["edges"] == []
+
+
+def test_cors_is_granted_only_to_loopback(fake_home):
+    """The socket is loopback-bound already, so this widens nothing -- but it
+    must never echo an arbitrary Origin back."""
+    import inspect
+    src = inspect.getsource(console._Handler._send)
+    assert 'startswith("http://127.0.0.1:")' in src
+    assert '"*"' not in src

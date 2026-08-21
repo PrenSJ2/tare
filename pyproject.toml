@@ -1,19 +1,19 @@
 [project]
-name = "harness"
+name = "tare"
 version = "0.2.0"
-description = "Inventory and search your Claude Code harness."
+description = "Find what your Claude Code setup actually costs, and shelve what it never uses."
 requires-python = ">=3.11"
 dependencies = ["pyyaml"]
 
 [project.scripts]
-harness = "harness.cli:run"
+tare = "tare.cli:run"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/harness"]
+packages = ["src/tare"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"src/harness/web" = "harness/web"
+"src/tare/web" = "tare/web"

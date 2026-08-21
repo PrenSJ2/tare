@@ -2,11 +2,11 @@
 
 ## Why this exists alongside agent-flow
 
-agent-flow renders live orchestration and does it well, so harness keeps it as
+agent-flow renders live orchestration and does it well, so tare keeps it as
 an upstream dependency rather than forking it. This serves the parts it cannot:
 
 - **the capability graph** — 209 nodes and their `routes-to` edges, out of
-  `harness.db`, which agent-flow has no knowledge of
+  `tare.db`, which agent-flow has no knowledge of
 - **usage memory** — gaps, per-project usage, token weight
 - **history** — agent-flow starts empty and shows only what arrives after it
   launches. This reconstructs every agent that has ever run from the
@@ -56,7 +56,7 @@ AGENTS_PER_PROJECT = 40
 def _reader():
     """swarm's transcript reader, if it is installed.
 
-    Optional on purpose: harness must work without swarm, and the console
+    Optional on purpose: tare must work without swarm, and the console
     degrades to its own two views rather than failing outright.
     """
     try:
@@ -204,6 +204,13 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # The forked UI is served from its own loopback port, so reading this
+        # data is cross-origin. Allowed deliberately and only for loopback --
+        # the socket is already bound to 127.0.0.1, so this widens nothing that
+        # was not already reachable by anything running on this machine.
+        origin = self.headers.get("Origin", "")
+        if origin.startswith("http://127.0.0.1:") or origin.startswith("http://localhost:"):
+            self.send_header("Access-Control-Allow-Origin", origin)
         self.end_headers()
         self.wfile.write(body)
 
@@ -267,7 +274,7 @@ def serve(port: int = DEFAULT_PORT, *, redact: bool = False, open_browser: bool 
     if open_browser:
         import webbrowser
         threading.Timer(0.4, lambda: webbrowser.open(url(port))).start()
-    print(f"harness console at {url(port)}  (ctrl-c to stop)")
+    print(f"tare console at {url(port)}  (ctrl-c to stop)")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -283,7 +290,7 @@ def ensure(port: int = DEFAULT_PORT) -> bool:
         if is_up(port):
             return True
         subprocess.Popen(
-            [sys.executable, "-m", "harness.console", "--port", str(port)],
+            [sys.executable, "-m", "tare.console", "--port", str(port)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
             start_new_session=True,
         )
@@ -295,7 +302,7 @@ def ensure(port: int = DEFAULT_PORT) -> bool:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(prog="harness.console")
+    parser = argparse.ArgumentParser(prog="tare.console")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--redact", action="store_true")
     parser.add_argument("--open", action="store_true")

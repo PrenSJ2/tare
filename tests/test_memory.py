@@ -11,7 +11,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from harness import db, memory, mine
+from tare import db, memory, mine
 
 NOW = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
 

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from harness import activate, db, paths, scan, vault
+from tare import activate, db, paths, scan, vault
 
 
 def make_skill(base: Path, name: str, *, frontmatter_name: str | None = None) -> Path:
@@ -380,11 +380,11 @@ def test_deactivate_by_id_resolves_ambiguity(fake_home):
 def test_restoring_reports_the_state_it_came_from(fake_home):
     """Memory cannot tell a shelving mistake from a no-op without this.
 
-    Every activation was recording `was: null`, so `harness learned` never
+    Every activation was recording `was: null`, so `tare learned` never
     surfaced a single "you un-shelved this, the vault got it wrong" finding --
     the most useful signal the memory was built for, dropped silently.
     """
-    from harness import db, vault
+    from tare import db, vault
 
     conn = db.connect()
     src = fake_home / "skills" / "alpha"

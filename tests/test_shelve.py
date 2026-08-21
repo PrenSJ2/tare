@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from harness import db, edges, paths, scan, shelve, vault
+from tare import db, edges, paths, scan, shelve, vault
 
 # ---------------------------------------------------------------------------
 # Fixture helpers
@@ -370,7 +370,7 @@ def test_shelve_user_apply_refuses_with_zero_usage_events(fake_home):
     scan.scan_user_skills(conn)
     conn.commit()
 
-    with pytest.raises(RuntimeError, match="harness mine"):
+    with pytest.raises(RuntimeError, match="tare mine"):
         shelve.shelve_user(conn, dry_run=False)
 
 
@@ -391,7 +391,7 @@ def test_shelve_plugins_apply_refuses_with_zero_usage_events(fake_home):
     scan.scan_plugin_skills(conn)
     conn.commit()
 
-    with pytest.raises(RuntimeError, match="harness mine"):
+    with pytest.raises(RuntimeError, match="tare mine"):
         shelve.shelve_plugins(conn, dry_run=False)
 
 

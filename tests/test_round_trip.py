@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from harness import activate, audit, cli, db, install, lookup, scan, shelve, vault
+from tare import activate, audit, cli, db, install, lookup, scan, shelve, vault
 
 
 def build_capabilities(home, count=6):

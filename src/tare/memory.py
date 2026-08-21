@@ -365,7 +365,7 @@ def suggestions(conn: sqlite3.Connection, *, now: datetime | None = None,
 
 def render(items: list[Suggestion]) -> str:
     if not items:
-        return "nothing learned yet -- run `harness lookup` a few times and check back"
+        return "nothing learned yet -- run `tare lookup` a few times and check back"
     lines = [f"{len(items)} thing(s) learned from use"]
     for item in items:
         lines.append("")

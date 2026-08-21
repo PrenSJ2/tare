@@ -13,7 +13,7 @@ import sqlite3
 
 import pytest
 
-from harness import db, lookup
+from tare import db, lookup
 
 GOLDEN_DB = os.path.expanduser("~/Documents/Code/harness-recovery/harness-original.db")
 

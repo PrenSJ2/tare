@@ -65,7 +65,7 @@ def _cmd_mine(conn, args) -> int:
     if r.unreadable:
         print(f"  {r.unreadable} transcript(s) could not be read")
     if r.excluded:
-        print(f"  {r.excluded} transcripts excluded as harness's own tagging exhaust")
+        print(f"  {r.excluded} transcripts excluded as tare's own tagging exhaust")
     return 0
 
 
@@ -105,7 +105,7 @@ def _cmd_lookup(conn, args) -> int:
         for chain in getattr(r, "chains", [])[:3]:
             print(f"  via: {chain}")
         if r.state == "vaulted":
-            print(f"  shelved -- `harness activate {r.name}` brings it back")
+            print(f"  shelved -- `tare activate {r.name}` brings it back")
     return 0
 
 
@@ -126,7 +126,7 @@ def _cmd_uninstall(conn, args) -> int:
     install_mod.uninstall()
     print("skill and hook removed; the vault is untouched")
     print("Shelved capabilities stay in the vault. Bring one back with:")
-    print("  harness activate <name>")
+    print("  tare activate <name>")
     return 0
 
 
@@ -151,7 +151,7 @@ def _cmd_hookline(conn, args) -> int:
     """
     try:
         # Best effort, silent, non-blocking: if the viewer is already up this
-        # is a single refused-or-accepted socket check. Set HARNESS_NO_VIEWER
+        # is a single refused-or-accepted socket check. Set TARE_NO_VIEWER
         # to opt out entirely.
         viewer_mod.ensure()
     except Exception:
@@ -176,15 +176,15 @@ def _cmd_hookline(conn, args) -> int:
         domains = ", ".join(tag for tag, _ in tags.most_common(12))
 
         print(
-            f"harness: {len(rows)} capabilities ({shape}) are shelved and are NOT "
+            f"tare: {len(rows)} capabilities ({shape}) are shelved and are NOT "
             f"listed anywhere in this context."
         )
         if domains:
             print(f"They cover: {domains}.")
         print(
             "Before concluding that no skill or subagent exists for a task, run "
-            '`harness lookup "<what you need>"`. Bring one back with '
-            "`harness activate <name>` -- it stays available for the rest of the session."
+            '`tare lookup "<what you need>"`. Bring one back with '
+            "`tare activate <name>` -- it stays available for the rest of the session."
         )
     except Exception:
         pass
@@ -199,7 +199,7 @@ def _cmd_activate(conn, args) -> int:
         return 1
     if result.get("failed"):
         print(f"partly applied: {result['failed']}", file=sys.stderr)
-        print("Run `harness scan` to reconcile the index.", file=sys.stderr)
+        print("Run `tare scan` to reconcile the index.", file=sys.stderr)
         return 1
     if result.get("already_live"):
         print(f"{args.name} is already live")
@@ -282,7 +282,7 @@ def _cmd_console(conn, args) -> int:
     if console_mod.is_up(args.port):
         print(f"console: running at {console_mod.url(args.port)}")
         return 0
-    print("console: not running — start it with `harness console --start`")
+    print("console: not running — start it with `tare console --start`")
     return 0
 
 
@@ -324,7 +324,7 @@ def _cmd_vault(conn, args) -> int:
     # make a shelved capability findable again, so nothing may be vaulted
     # before they exist. Distinguish "settings unreadable" from "not
     # installed" -- reporting the latter for the former sends the operator to
-    # `harness install`, which reads the same broken file.
+    # `tare install`, which reads the same broken file.
     if not dry:
         try:
             install_mod._load()
@@ -333,9 +333,9 @@ def _cmd_vault(conn, args) -> int:
             print("Fix that file before harness can tell whether it is installed.", file=sys.stderr)
             return 2
         if not install_mod.is_installed():
-            print("error: the harness skill and hook are not registered.", file=sys.stderr)
+            print("error: the tare skill and hook are not registered.", file=sys.stderr)
             print("Shelving without them would strand every capability. Run:", file=sys.stderr)
-            print("  harness install", file=sys.stderr)
+            print("  tare install", file=sys.stderr)
             return 2
 
     before = audit_mod.audit(conn).total_tokens
@@ -390,7 +390,7 @@ def _cmd_vault(conn, args) -> int:
     if plugins["disabled"]:
         # Per-plugin breakdown, not one combined figure for a comma list: at
         # ~100 items an operator cannot otherwise tell which plugin drives the
-        # saving without cross-referencing `harness audit`.
+        # saving without cross-referencing `tare audit`.
         saving = {d["key"]: d.get("cold_tokens", 0) for d in planned["disable"]}
         total = sum(saving.get(k, 0) for k in plugins["disabled"])
         print(f"\n{'would disable' if dry else 'disabled'} {len(plugins['disabled'])} plugin(s), "
@@ -417,19 +417,19 @@ def _cmd_vault(conn, args) -> int:
     # tells the operator how to undo something they have already done.
     if moved or plugins["disabled"]:
         print("\nNothing changed. Re-run with --apply to perform it. If you do:" if dry else "")
-        print("User skills/agents: `harness activate <name>` restores them from the vault.")
+        print("User skills/agents: `tare activate <name>` restores them from the vault.")
         if plugins["disabled"]:
-            print("Disabled plugins: `harness activate <name>` re-enables them in settings.json,")
-            print("but that is a settings change, not a vaulted file -- `harness deactivate`")
+            print("Disabled plugins: `tare activate <name>` re-enables them in settings.json,")
+            print("but that is a settings change, not a vaulted file -- `tare deactivate`")
             print("will NOT re-disable a plugin.")
     if not dry:
-        print("\nThe index is now stale for what changed. Run `harness scan` to reconcile it.")
+        print("\nThe index is now stale for what changed. Run `tare scan` to reconcile it.")
 
     return 1 if (failed or plugins["failed"]) else 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="harness", description="Inventory and search your Claude Code harness.")
+    parser = argparse.ArgumentParser(prog="tare", description="Inventory and search your Claude Code harness.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add(name, help_text, fn):
@@ -447,7 +447,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--limit", type=int, default=5)
 
     add("audit", "token cost, buckets, duplicates", _cmd_audit)
-    add("install", "register the harness skill and SessionStart hook", _cmd_install)
+    add("install", "register the tare skill and SessionStart hook", _cmd_install)
     add("uninstall", "remove the skill and hook; keeps the vault", _cmd_uninstall)
     add("hookline", "one line for the SessionStart hook", _cmd_hookline)
 

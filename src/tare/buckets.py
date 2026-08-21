@@ -23,7 +23,12 @@ from datetime import datetime
 # Names that are always kept loaded regardless of usage -- the tool's own
 # dependencies (it would be absurd for harness to shelve its own browser
 # driver) plus itself.
-PINNED = frozenset({"agent-browser", "claude-api", "harness"})
+# `tare` is here because the tare skill and its SessionStart hook are what make
+# a shelved capability findable again. Shelving it strands everything else --
+# which the rename briefly did, until the round-trip test caught it: the name
+# changed here and PINNED still said "harness", so the tool's own skill was no
+# longer protected from its own vault.
+PINNED = frozenset({"agent-browser", "claude-api", "tare"})
 
 # Prefixes that pin by *id component*, not by `name`. See is_pinned for why
 # that distinction is load-bearing.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from harness import db, update
+from tare import db, update
 
 
 def install_plugin(home, marketplace, plugin, version):

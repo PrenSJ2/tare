@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from harness import paths, vault
+from tare import paths, vault
 
 
 def make_skill(fake_home: Path, name: str, frontmatter_name: str | None = None) -> Path:

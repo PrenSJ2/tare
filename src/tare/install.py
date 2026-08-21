@@ -1,7 +1,7 @@
 """Write the `harness` skill and register the `SessionStart` hook that make
 shelved capabilities findable again.
 
-This is the safety layer around the vault gate: `harness lookup` only helps
+This is the safety layer around the vault gate: `tare lookup` only helps
 an operator if something tells them it exists, and that "something" is this
 skill plus the hook that keeps its own health checkable. Getting install/
 uninstall wrong either breaks the operator's whole settings.json (rule 1) or
@@ -26,11 +26,15 @@ HOOK_EVENT = "SessionStart"
 # The basename we look for in a registered hook command, and the exact
 # argument it must be invoked with. Matching on basename -- never on a
 # substring of the whole command -- is what keeps `uninstall` from deleting
-# a foreign hook like "/opt/my-harness-tool/bin/run hookline" (rule 3):
-# that command's basename is "run", not "harness", so it is correctly left
-# alone even though the string "harness" and the suffix " hookline" both
-# appear in it.
-_HOOK_BASENAME = "harness"
+# a foreign hook like "/opt/my-tare-tool/bin/run hookline" (rule 3): that
+# command's basename is "run", not "tare", so it is correctly left alone even
+# though the string "tare" and the suffix " hookline" both appear in it.
+#
+# NOTE this must match the console script name in pyproject.toml. It was
+# "harness" before the rename, and an install predating that keeps a hook
+# pointing at the old executable -- `tare install` rewrites it, `tare doctor`
+# reports it as not installed until then.
+_HOOK_BASENAME = "tare"
 _HOOK_ARG = "hookline"
 
 # 21 words. Always loaded, so short is load-bearing -- this project's own
@@ -44,11 +48,11 @@ _SKILL_DESCRIPTION = (
 # scan, mine, tag, build, lookup, audit, graph, install, uninstall, hookline,
 # activate, deactivate, doctor, vault.
 _SKILL_BODY = f"""---
-name: harness
+name: tare
 description: {_SKILL_DESCRIPTION}
 ---
 
-# harness
+# tare
 
 Most of this machine's skills and agents are shelved out of the always-loaded
 context to save tokens -- moved, not deleted. Before telling the user no
@@ -57,7 +61,7 @@ matching capability exists, look here first.
 ## Finding a capability
 
 ```
-harness lookup "<what you need>"
+tare lookup "<what you need>"
 ```
 
 Searches the whole graph, live and vaulted alike, ranked by relevance and
@@ -66,29 +70,29 @@ past usage.
 ## Bringing a shelved capability back
 
 ```
-harness activate <name-or-id>
+tare activate <name-or-id>
 ```
 
 Restores a vaulted skill or agent, or re-enables a disabled plugin, so it
-loads normally again. `harness deactivate <name-or-id>` reverses a restore.
+loads normally again. `tare deactivate <name-or-id>` reverses a restore.
 
 ## Everything else
 
-`harness scan`, `harness mine`, `harness tag` and `harness build` maintain the
-underlying inventory; `harness audit` reports what the always-loaded context
-costs; `harness doctor` checks for drift; `harness vault` shelves never-invoked
-capabilities (dry run by default, `--apply` performs it). `harness install` /
-`harness uninstall` manage this skill and its hook. `harness hookline` is what
+`tare scan`, `tare mine`, `tare tag` and `tare build` maintain the
+underlying inventory; `tare audit` reports what the always-loaded context
+costs; `tare doctor` checks for drift; `tare vault` shelves never-invoked
+capabilities (dry run by default, `--apply` performs it). `tare install` /
+`tare uninstall` manage this skill and its hook. `tare hookline` is what
 Claude Code runs at session start -- not meant to be invoked by hand.
 
 Every command named on this page exists. If one is missing, the skill is stale:
-re-run `harness install`.
+re-run `tare install`.
 """
 
 
 def _is_our_hook_command(command: str) -> bool:
     """Shape+marker check for rule 3: a command is ours only if it is
-    exactly `<something>/harness hookline` -- basename match on the first
+    exactly `<something>/tare hookline` -- basename match on the first
     token, exact match (not `.endswith`) on the second. Anything with extra
     arguments, or whose executable's basename differs, is a foreign hook.
     """

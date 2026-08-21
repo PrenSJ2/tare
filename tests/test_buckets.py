@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from harness import buckets, db
+from tare import buckets, db
 
 
 # ---------------------------------------------------------------------------

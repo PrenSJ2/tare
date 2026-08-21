@@ -155,7 +155,7 @@ def _inspect_manifest_vs_disk(report: Report, data: dict) -> None:
                     "vault-entry-missing-from-manifest",
                     f"{found} exists in the vault but has no manifest entry",
                     "the manifest is the only index to what's stashed -- add an entry by hand from "
-                    f"`git -C {root} log` history, or the capability is unreachable via `harness activate`",
+                    f"`git -C {root} log` history, or the capability is unreachable via `tare activate`",
                 )
 
 
@@ -176,7 +176,7 @@ def _inspect_restored_entries(report: Report, data: dict) -> None:
                     "error",
                     "restored-symlink-missing",
                     f"{kind}/{key} is marked restored in the manifest but {live} does not exist",
-                    f"run `harness activate {key}` to relink it, or `harness scan` to reconcile the graph "
+                    f"run `tare activate {key}` to relink it, or `tare scan` to reconcile the graph "
                     "if it was deliberately removed",
                 )
 
@@ -186,7 +186,7 @@ def _inspect_shelved_but_loaded(report: Report, data: dict) -> None:
 
     Stashing moves the file, so normal operation cannot produce this -- but
     restoring a vault by hand (copying the files back rather than using
-    `harness activate`) leaves the manifest untouched and the capability
+    `tare activate`) leaves the manifest untouched and the capability
     loaded. Found on the real machine after exactly that: 63 entries the
     graph called shelved while every one of them sat in ~/.claude/skills.
 
@@ -208,8 +208,8 @@ def _inspect_shelved_but_loaded(report: Report, data: dict) -> None:
                 f"{kind}/{key} is in the vault manifest but {live} is a real file on the load path "
                 "-- it is being loaded while the graph reports it shelved",
                 f"if you restored it by hand, drop it from the vault so the graph agrees: "
-                f"`harness activate {key}` then `harness deactivate {key}`, or remove the vault "
-                "entry and re-run `harness scan`",
+                f"`tare activate {key}` then `tare deactivate {key}`, or remove the vault "
+                "entry and re-run `tare scan`",
             )
 
 
@@ -220,7 +220,7 @@ def _inspect_shelved_but_loaded(report: Report, data: dict) -> None:
 
 def _inspect_vaulted_without_node(report: Report, conn, data: dict) -> None:
     """A manifest entry (not restored) with no corresponding graph node --
-    `harness lookup` cannot surface a capability that isn't in the graph at
+    `tare lookup` cannot surface a capability that isn't in the graph at
     all, silently defeating the entire point of vaulting rather than
     deleting.
     """
@@ -239,7 +239,7 @@ def _inspect_vaulted_without_node(report: Report, conn, data: dict) -> None:
                     "warning",
                     "vaulted-without-node",
                     f"{kind}/{key} is vaulted but has no node {node_id!r} in the graph",
-                    "run `harness scan` to rebuild it",
+                    "run `tare scan` to rebuild it",
                 )
 
 
@@ -256,7 +256,7 @@ def _inspect_stale_promoted_symlinks(report: Report, conn) -> None:
     What genuinely goes stale is the symlink TARGET. A promotion points into a
     versioned plugin cache path, so `/plugin update` moving or pruning that
     version directory leaves the link dangling -- the capability is listed but
-    nothing serves it. That is the real finding, and `harness activate` is
+    nothing serves it. That is the real finding, and `tare activate` is
     no help because the node is already `state='live'`.
     """
     rows = conn.execute(
@@ -279,7 +279,7 @@ def _inspect_stale_promoted_symlinks(report: Report, conn) -> None:
             f"{row['id']} is promoted but {link} points at a target that no longer exists "
             f"-- {plugin_key}'s cached version directory has probably moved",
             f"re-point it at the current version under {paths.plugins_cache_dir()}, or re-run "
-            "`harness vault --apply` to promote it afresh",
+            "`tare vault --apply` to promote it afresh",
         )
 
 
@@ -308,7 +308,7 @@ def _inspect_dangling_symlinks(report: Report) -> None:
                     "dangling-symlink",
                     f"{entry} is a dangling {label} symlink (target does not exist)",
                     "if the target plugin/vault entry was deliberately removed, delete this symlink by hand; "
-                    "otherwise run `harness scan` and check the node's parse_error for what it resolves to",
+                    "otherwise run `tare scan` and check the node's parse_error for what it resolves to",
                 )
 
 
@@ -326,8 +326,8 @@ def _inspect_install(report: Report) -> None:
             report,
             "error",
             "skill-not-installed",
-            f"the harness skill is not installed at {paths.skill_install_path()}",
-            "run `harness install`",
+            f"the tare skill is not installed at {paths.skill_install_path()}",
+            "run `tare install`",
         )
     if not report.hook_installed:
         registered = install.registered_command()
@@ -337,7 +337,7 @@ def _inspect_install(report: Report) -> None:
                 "error",
                 "hook-not-installed",
                 "no SessionStart hook is registered for harness",
-                "run `harness install`",
+                "run `tare install`",
             )
         else:
             _add(
@@ -345,7 +345,7 @@ def _inspect_install(report: Report) -> None:
                 "error",
                 "hook-command-missing",
                 f"the registered hook command {registered!r} points at an executable that no longer exists",
-                "run `harness install` to re-register it against the current executable",
+                "run `tare install` to re-register it against the current executable",
             )
 
     try:
@@ -359,7 +359,7 @@ def _inspect_install(report: Report) -> None:
             "settings-unreadable",
             f"settings.json could not be read: {exc}",
             "fix the JSON by hand, or restore from the most recent "
-            f"{paths.settings_path().name}.*.bak written by `harness install`",
+            f"{paths.settings_path().name}.*.bak written by `tare install`",
         )
 
 
@@ -384,7 +384,7 @@ def inspect(conn) -> Report:
             "error",
             "vault-invalid",
             f"{paths.vault_dir()} exists but is not a valid vault (missing .git or manifest.json)",
-            "if this was a killed `harness install`/first stash, remove the partial directory and re-run "
+            "if this was a killed `tare install`/first stash, remove the partial directory and re-run "
             "the operation that creates it; otherwise investigate by hand -- do not delete without checking "
             "for a partial .git history first",
         )

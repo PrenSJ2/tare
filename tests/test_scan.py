@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from harness import db, paths, scan, vault
+from tare import db, paths, scan, vault
 
 
 # ---------------------------------------------------------------------------
@@ -744,7 +744,7 @@ def test_scan_order_independent(tmp_path, monkeypatch):
     be identical regardless of which scanner ran first.
     """
     home_a = _build_home(tmp_path / "a")
-    monkeypatch.setenv("HARNESS_HOME", str(home_a))
+    monkeypatch.setenv("TARE_HOME", str(home_a))
     conn_a = db.connect()
     scan.scan_vaulted(conn_a)
     scan.scan_user_skills(conn_a)
@@ -760,7 +760,7 @@ def test_scan_order_independent(tmp_path, monkeypatch):
     conn_a.close()
 
     home_b = _build_home(tmp_path / "b")
-    monkeypatch.setenv("HARNESS_HOME", str(home_b))
+    monkeypatch.setenv("TARE_HOME", str(home_b))
     conn_b = db.connect()
     scan.scan_plugin_skills(conn_b)
     scan.scan_agents(conn_b)
@@ -787,7 +787,7 @@ def test_scan_results_survive_reopening_the_database(fake_home):
     running against a real configuration, where scan reported "63 agents" and
     the database was completely unchanged.
     """
-    from harness import db, scan
+    from tare import db, scan
 
     d = fake_home / "skills" / "alpha"
     d.mkdir(parents=True)
@@ -809,7 +809,7 @@ def test_scan_results_survive_reopening_the_database(fake_home):
 
 def test_a_previously_vaulted_node_returns_to_live_once_its_file_is_back(fake_home):
     """State must follow the filesystem, not linger from a previous run."""
-    from harness import db, scan
+    from tare import db, scan
 
     conn = db.connect()
     conn.execute(
