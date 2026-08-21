@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32"
+     role="img" aria-label="tare">
+  <!--
+    Tare is the weight of the empty container, deducted so a scale reports
+    what is actually inside. That is the whole tool in one figure: the outline
+    is everything installed, the filled band is what is loaded right now, and
+    the gap above it is the vault.
+
+    Drawn with no background. A cyan mark on transparency sits correctly on a
+    light or a dark browser tab, and the console is not always the only thing
+    in the strip.
+
+    The tare line is the dashed rule -- the level a scale is zeroed to. It is
+    deliberately the only broken stroke in the mark, because it is the one
+    element that denotes a measurement rather than a thing.
+  -->
+  <g fill="none" stroke="#66ccff" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="5.25" y="6.25" width="21.5" height="21.5" rx="3.25" stroke-width="2.5"/>
+    <path d="M8.5 14.5 h15" stroke-width="1.75" stroke-dasharray="3 2.6" opacity="0.75"/>
+  </g>
+  <rect x="8.5" y="18" width="15" height="6.25" rx="1.5" fill="#66ccff"/>
+  <path d="M12 3.4 h8" stroke="#66ccff" stroke-width="2.5" stroke-linecap="round"/>
+</svg>

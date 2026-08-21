@@ -1,7 +1,13 @@
+<img src="assets/tare-icon.svg" alt="" width="72" align="right">
+
 # tare
 
 > **tare** *(n.)* the weight of a container, deducted to find the weight
 > of the contents.
+
+*The mark: the outline is everything installed, the filled band is what is
+loaded right now, the gap above it is the vault, and the dashed rule is the
+tare line a scale is zeroed to.*
 
 Most of a Claude Code configuration is listed in every prompt and almost never
 used. `tare` inventories what you have, mines your own transcripts for what
@@ -115,6 +121,60 @@ anything.
 It reports and changes nothing. Letting usage silently re-rank search would
 make the results unexplainable the first time they surprised you.
 
+## The console
+
+```bash
+tare console --start    # the API, on 127.0.0.1:4242
+tare viewer --start     # the UI, on 127.0.0.1:3939
+```
+
+Three views over the same machine:
+
+- **Agents** — every agent that has ever run, rebuilt from transcripts. A
+  hook-driven viewer starts empty and shows only what arrives after it
+  launches; this reconstructs the record already on disk, so opening it later
+  still tells you everything.
+- **Skills** — the capability graph on canvas, coloured by domain, with a
+  sidebar for how it got this way.
+- **Memory** — what usage has taught it, searchable.
+
+Skills and Memory are separate views rather than panels beside the agent
+canvas, because neither is scoped to a session: they are properties of the
+machine, true whether or not anything is running.
+
+The UI is a fork of [agent-flow](https://github.com/patoles/agent-flow), kept
+as a git checkout that can still pull from upstream rather than a vendored
+copy that silently drifts. See `NOTICE.md` in that repository for attribution.
+
+Both bind loopback with no flag to change it. They read transcripts, file
+paths and shell commands — a developer's private working record — so being
+unreachable off the machine is a property of the design, not a default.
+
+## Grouping and history
+
+```bash
+tare domains            # what each domain holds, and why
+tare domains code       # one domain in full
+tare history            # what was added, what changed, what a session edited
+```
+
+The graph carries 641 distinct tags across 180 capabilities: accurate, and
+useless as a grouping. `domains` rolls them into nine — code, marketing,
+video, design, process, infra, writing, data, and other — by keyword rules
+rather than clustering, so a capability in the wrong domain is a line someone
+can read and correct. Every answer reports the term that decided it, in the
+CLI and in the console panel both.
+
+`history` reads two records because neither is sufficient alone. The
+filesystem knows when each capability appeared and when it last changed:
+complete, retroactive, anonymous. Transcripts know which session edited what,
+and in which project: attributable, but only where a transcript survives.
+
+That second record is evidence of presence, never of absence. Transcripts age
+out, are excluded as tagging exhaust, and never existed for an edit made in an
+editor — so a capability with **no recorded session edit was not necessarily
+written by hand**, and nothing here claims it was.
+
 ## Where knowledge lives
 
 Three kinds, three homes, no duplication:
@@ -143,6 +203,7 @@ tare mine     mine transcripts for real usage
 tare tag      normalise descriptions (hash-cached)
 tare build    all of the above, plus edges, buckets and the search index
 tare doctor   check the vault and installation for drift
+tare update   which plugins are behind their marketplace
 ```
 
 ## Known limitations
@@ -153,8 +214,9 @@ tare doctor   check the vault and installation for drift
 - **Not every plugin layout is reached.** `tare audit` prints a coverage
   line naming how many `SKILL.md` files it could not classify. A stated gap is
   a limitation; an unstated one is a wrong answer.
-- **`update` and `graph` are not implemented** — upstream drift reporting and
-  the HTML export.
+- **A plugin skill's date is when it was cached here**, not when it was
+  written, so `history` reports plugin capabilities in their own list rather
+  than interleaving them into a timeline that would read as authorship.
 - **`deactivate` cannot re-disable a plugin.** Re-enabling one is a settings
   change, not a vaulted file; `tare vault --apply` will disable it again.
 
