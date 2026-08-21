@@ -5,9 +5,10 @@
 > **tare** *(n.)* the weight of a container, deducted to find the weight
 > of the contents.
 
-*The mark: the outline is everything installed, the filled band is what is
-loaded right now, the gap above it is the vault, and the dashed rule is the
-tare line a scale is zeroed to.*
+*The mark (`assets/tare-icon.svg`, also the console's favicon): the outline is
+everything installed, the filled band is what is loaded right now, the gap
+above it is the vault, and the dashed rule is the tare line a scale is zeroed
+to.*
 
 Most of a Claude Code configuration is listed in every prompt and almost never
 used. `tare` inventories what you have, mines your own transcripts for what
@@ -133,7 +134,9 @@ Three views over the same machine:
 - **Agents** — every agent that has ever run, rebuilt from transcripts. A
   hook-driven viewer starts empty and shows only what arrives after it
   launches; this reconstructs the record already on disk, so opening it later
-  still tells you everything.
+  still tells you everything. Session tabs are named for the repository they
+  run in and coloured to match the terminal tab, and an **ALL** tab puts every
+  session's agents on one canvas.
 - **Skills** — the capability graph on canvas, coloured by domain, with a
   sidebar for how it got this way.
 - **Memory** — what usage has taught it, searchable.
@@ -141,6 +144,14 @@ Three views over the same machine:
 Skills and Memory are separate views rather than panels beside the agent
 canvas, because neither is scoped to a session: they are properties of the
 machine, true whether or not anything is running.
+
+The ALL tab is not just a filter being switched off. The simulation keys
+agents by name alone, and every session's root is spawned with the same one,
+so merging them raw collapses six orchestrators into one node belonging to
+none of them. Names are namespaced per session on the way in
+(`homelab#cc75/code-reviewer`) and the session roots are laid out on a ring sized
+from the spacing between neighbours, so two sessions sit close together and a
+dozen spread out only as far as they must.
 
 The UI is a fork of [agent-flow](https://github.com/patoles/agent-flow), kept
 as a git checkout that can still pull from upstream rather than a vendored
