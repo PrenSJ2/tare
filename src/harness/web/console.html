@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>harness — console</title>
+<style>
+  :root{--paper:#f3f5f4;--card:#fff;--ink:#101619;--ink-soft:#4a585c;--ink-faint:#7d8b8e;--rule:#d8dedc;
+    --live:#1a6b58;--live-wash:#dfeae6;--shelved:#7b6a89;--cost:#b45527;--cost-wash:#f5e4da;--plugin:#2f6f9e;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;}
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+    --paper:#0d1214;--card:#141c1f;--ink:#e6ecea;--ink-soft:#9dadaf;--ink-faint:#6b7b7e;--rule:#242f33;
+    --live:#4bbd9d;--live-wash:#12302a;--shelved:#b096c2;--cost:#e08a55;--cost-wash:#331e12;--plugin:#6fa8d4;}}
+  :root[data-theme="dark"]{--paper:#0d1214;--card:#141c1f;--ink:#e6ecea;--ink-soft:#9dadaf;--ink-faint:#6b7b7e;
+    --rule:#242f33;--live:#4bbd9d;--live-wash:#12302a;--shelved:#b096c2;--cost:#e08a55;--cost-wash:#331e12;--plugin:#6fa8d4;}
+  *{box-sizing:border-box}
+  body{background:var(--paper);color:var(--ink);font-family:var(--sans);line-height:1.55;margin:0;
+    padding:clamp(1.25rem,3.5vw,2.5rem) clamp(1rem,3.5vw,2.5rem) 4rem;font-variant-numeric:tabular-nums;}
+  .wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:1.5rem;}
+  .eyebrow{font-family:var(--mono);font-size:.7rem;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-faint);margin:0 0 .5rem;}
+  h1{font-family:var(--mono);font-size:clamp(1.4rem,3vw,1.9rem);font-weight:600;margin:0 0 .4rem;}
+  p{margin:0;max-width:70ch;color:var(--ink-soft);}
+  h2{font-family:var(--mono);font-size:.75rem;letter-spacing:.15em;text-transform:uppercase;color:var(--ink-soft);margin:0 0 .7rem;font-weight:600;}
+  code{font-family:var(--mono);font-size:.86em}
+
+  .topbar{display:flex;gap:1rem;align-items:center;flex-wrap:wrap;justify-content:space-between}
+  nav{display:flex;gap:2px;background:var(--rule);border:1px solid var(--rule);border-radius:3px;overflow:hidden;width:fit-content;}
+  nav button{font-family:var(--mono);font-size:.74rem;letter-spacing:.06em;text-transform:uppercase;
+    padding:.5rem 1rem;border:0;background:var(--card);color:var(--ink-soft);cursor:pointer;}
+  nav button[aria-selected="true"]{background:var(--ink);color:var(--paper);}
+  nav button:focus-visible{outline:2px solid var(--live);outline-offset:-2px;}
+  .pulse{font-family:var(--mono);font-size:.68rem;color:var(--ink-faint);display:flex;align-items:center;gap:.45rem}
+  .pulse i{width:7px;height:7px;border-radius:50%;background:var(--live);display:inline-block}
+  @media (prefers-reduced-motion:no-preference){.pulse i{animation:bl 2.4s ease-in-out infinite}
+    @keyframes bl{0%,100%{opacity:1}50%{opacity:.2}}}
+  section[hidden]{display:none}
+
+  .ledger{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:1px;background:var(--rule);
+    border:1px solid var(--rule);border-radius:3px;overflow:hidden;}
+  .cell{background:var(--card);padding:.9rem 1rem;}
+  .cell .k{font-family:var(--mono);font-size:.64rem;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-faint);}
+  .cell .v{font-family:var(--mono);font-size:1.5rem;font-weight:600;margin-top:.2rem;}
+  .cell .v.on{color:var(--live)} .cell .v.warn{color:var(--cost)}
+
+  .stage{position:relative;border:1px solid var(--rule);border-radius:3px;background:var(--card);overflow:hidden;}
+  canvas{display:block;width:100%;height:520px;cursor:grab}
+  canvas:active{cursor:grabbing}
+  .hud{position:absolute;top:.6rem;left:.6rem;display:flex;gap:.4rem;flex-wrap:wrap}
+  .hud button{font-family:var(--mono);font-size:.66rem;padding:.3rem .55rem;border:1px solid var(--rule);
+    border-radius:2px;background:var(--card);color:var(--ink-soft);cursor:pointer}
+  .hud button[aria-pressed="true"]{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+  .inspect{position:absolute;right:.6rem;top:.6rem;width:min(290px,42%);background:var(--card);
+    border:1px solid var(--rule);border-radius:3px;padding:.7rem .8rem;font-size:.8rem}
+  .inspect h4{font-family:var(--mono);font-size:.78rem;margin:0 0 .3rem}
+  .inspect .st{font-family:var(--mono);font-size:.64rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:.4rem}
+  .inspect ul{margin:.5rem 0 0;padding-left:1rem;color:var(--ink-soft);font-size:.75rem}
+  .legend{display:flex;gap:1rem;flex-wrap:wrap;font-family:var(--mono);font-size:.66rem;color:var(--ink-faint);margin-top:.6rem}
+  .legend i{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:.35rem;vertical-align:middle}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:1px;background:var(--rule);
+    border:1px solid var(--rule);border-radius:3px;overflow:hidden}
+  .box{background:var(--card);padding:.9rem 1rem}
+  .box h3{font-family:var(--mono);font-size:.76rem;margin:0 0 .5rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .box ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.25rem}
+  .box li{display:flex;justify-content:space-between;gap:.7rem;font-size:.78rem;color:var(--ink-soft)}
+  .box li b{font-family:var(--mono);font-weight:500;color:var(--ink-faint)}
+
+  .find{border-left:3px solid var(--cost);background:var(--cost-wash);padding:.75rem .9rem;border-radius:0 3px 3px 0}
+  .find+.find{margin-top:.5rem}
+  .find .h{font-family:var(--mono);font-size:.76rem;font-weight:600}
+  .find .d{font-size:.8rem;color:var(--ink-soft);margin-top:.15rem}
+  .find ul{margin:.35rem 0 0;padding-left:1rem;font-family:var(--mono);font-size:.68rem;color:var(--ink-faint)}
+
+  .bars{display:flex;flex-direction:column;gap:.45rem}
+  .bar{display:grid;grid-template-columns:minmax(110px,190px) 1fr auto;gap:.7rem;align-items:center}
+  .bar .lbl{font-family:var(--mono);font-size:.72rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bar .track{height:14px;background:var(--rule);border-radius:2px;overflow:hidden}
+  .bar .fill{height:100%;background:var(--cost)} .bar .fill.idx{background:var(--live)}
+  .bar .num{font-family:var(--mono);font-size:.72rem;color:var(--ink-soft)}
+
+  details.agent{background:var(--card);border:1px solid var(--rule);border-left:3px solid var(--rule);border-radius:3px}
+  details.agent[data-s="running"]{border-left-color:var(--live);background:var(--live-wash)}
+  details.agent+details.agent{margin-top:3px}
+  summary{cursor:pointer;padding:.5rem .8rem;display:grid;grid-template-columns:1fr auto auto;gap:.7rem;align-items:baseline;list-style:none}
+  summary::-webkit-details-marker{display:none}
+  summary:focus-visible{outline:2px solid var(--live);outline-offset:-2px}
+  .lbl2{font-family:var(--mono);font-size:.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .meta{font-family:var(--mono);font-size:.68rem;color:var(--ink-faint);white-space:nowrap}
+  .brain{padding:.7rem .8rem;border-top:1px solid var(--rule);display:grid;gap:.7rem;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
+  .brain h5{font-family:var(--mono);font-size:.62rem;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-faint);margin:0 0 .3rem}
+  .chip{font-family:var(--mono);font-size:.66rem;padding:.12rem .4rem;border-radius:2px;background:var(--paper);
+    border:1px solid var(--rule);color:var(--ink-soft);display:inline-block;margin:0 .2rem .2rem 0}
+  ul.plain{list-style:none;margin:0;padding:0}
+  ul.plain li{font-family:var(--mono);font-size:.66rem;color:var(--ink-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .rep{grid-column:1/-1;font-size:.8rem;color:var(--ink-soft);border-left:2px solid var(--rule);padding-left:.7rem;
+    white-space:pre-wrap;max-height:9rem;overflow:auto}
+  footer{color:var(--ink-faint);font-family:var(--mono);font-size:.68rem;border-top:1px solid var(--rule);padding-top:.9rem}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <p class="eyebrow">harness · console</p>
+    <h1>Three views of the same brain</h1>
+    <p>What this machine can do, what it has learned from being used, and what its agents actually did.
+       Read live from one SQLite file and the transcripts Claude Code writes anyway — no hooks, so it
+       costs nothing per tool call, and it has the whole history rather than only what arrived since it started.</p>
+  </header>
+
+  <div class="topbar">
+    <nav role="tablist">
+      <button role="tab" data-v="skills" aria-selected="true">Skills &amp; tools</button>
+      <button role="tab" data-v="memory" aria-selected="false">Memory</button>
+      <button role="tab" data-v="agents" aria-selected="false">Agents</button>
+    </nav>
+    <span class="pulse"><i></i><span id="pulse">connecting…</span></span>
+  </div>
+
+  <section data-view="skills">
+    <div class="ledger" id="sled"></div>
+    <div style="height:1.1rem"></div>
+    <h2>The capability graph — who routes to whom</h2>
+    <p style="margin-bottom:.8rem">Each dot is a skill or agent; a line means one dispatches the other.
+       Drag to pan, scroll to zoom, click a node to inspect it. The clusters are suites — and they are why
+       shelving on usage alone is dangerous.</p>
+    <div class="stage">
+      <canvas id="cv" width="1100" height="520"></canvas>
+      <div class="hud">
+        <button data-g="all" aria-pressed="true">All</button>
+        <button data-g="routed" aria-pressed="false">Routed only</button>
+        <button data-g="shelved" aria-pressed="false">Shelved</button>
+      </div>
+      <div class="inspect" id="insp" hidden></div>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--live)"></i>live user-authored</span>
+      <span><i style="background:var(--plugin)"></i>plugin</span>
+      <span><i style="background:var(--shelved)"></i>shelved / disabled</span>
+      <span>ring = has recorded use · size = tokens</span>
+    </div>
+  </section>
+
+  <section data-view="memory" hidden>
+    <div class="ledger" id="mled"></div>
+    <div style="height:1.1rem"></div>
+    <h2>What it has learned</h2>
+    <div id="learned"></div>
+    <div style="height:1.4rem"></div>
+    <h2>What each project leans on</h2>
+    <div class="grid" id="projects"></div>
+    <div style="height:1.4rem"></div>
+    <h2>Weight loaded every turn</h2>
+    <div class="bars" id="bars"></div>
+  </section>
+
+  <section data-view="agents" hidden>
+    <div class="ledger" id="aled"></div>
+    <div style="height:1.1rem"></div>
+    <h2>The record — what each agent did</h2>
+    <p style="margin-bottom:.8rem">Reconstructed from each agent's own transcript, so it covers everything
+       ever run, not only what happened while this page was open.</p>
+    <div id="fleet"></div>
+  </section>
+
+  <footer id="foot">loading…</footer>
+</div>
+
+<script>
+let D = null, openAgents = new Set();
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt = n => (n ?? 0).toLocaleString("en-GB");
+const clock = s => s == null ? "—" : (s >= 60 ? `${Math.floor(s/60)}m ${String(s%60).padStart(2,"0")}s` : `${s}s`);
+const shortProj = n => n.replace(/^-Users-[^-]+-/, "").replace(/^Documents-Code-?/, "") || "Code";
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll("nav button").forEach(o => o.setAttribute("aria-selected", String(o === b)));
+  document.querySelectorAll("section[data-view]").forEach(s => { s.hidden = s.dataset.view !== b.dataset.v; });
+  if (b.dataset.v === "skills") graph.kick();
+}));
+
+/* ---- graph: positions persist across refreshes so nodes never jump ------ */
+const graph = (() => {
+  const cv = $("cv"), ctx = cv.getContext("2d"), insp = $("insp");
+  let filter = "all", P = [], E = [], pos = new Map(), view = {x:0,y:0,k:1}, picked = null, alpha = 0;
+  let byId = new Map(), outgoing = new Map(), degree = new Map();
+
+  function ingest() {
+    byId = new Map(D.nodes.map(n => [n.i, n]));
+    outgoing = new Map(); degree = new Map();
+    for (const e of D.edges) {
+      if (!outgoing.has(e.s)) outgoing.set(e.s, []);
+      outgoing.get(e.s).push(e.d);
+      degree.set(e.s, (degree.get(e.s)||0)+1); degree.set(e.d, (degree.get(e.d)||0)+1);
+    }
+    build();
+  }
+
+  function build() {
+    const keep = D.nodes.filter(n =>
+      filter === "all" ? true : filter === "routed" ? degree.has(n.i) : n.s !== "live");
+    const set = new Set(keep.map(n => n.i));
+    P = keep.map((n, i) => {
+      // Reuse a node's previous position if we have seen it before -- a live
+      // view that reshuffles the whole layout on every poll is unreadable.
+      const prev = pos.get(n.i);
+      return prev
+        ? {n, x: prev.x, y: prev.y, vx: 0, vy: 0, r: 3 + Math.min(7, Math.sqrt((n.t||1)/9))}
+        : {n, x: Math.cos(i)*180 + cv.width/2 + (i%7)*9, y: Math.sin(i*1.7)*160 + cv.height/2 + (i%5)*9,
+           vx:0, vy:0, r: 3 + Math.min(7, Math.sqrt((n.t||1)/9))};
+    });
+    const idx = new Map(P.map((p,i) => [p.n.i, i]));
+    E = D.edges.filter(e => set.has(e.s) && set.has(e.d)).map(e => [idx.get(e.s), idx.get(e.d)]);
+    alpha = Math.max(alpha, 0.9);
+  }
+
+  function step() {
+    if (alpha < 0.005) return;
+    alpha *= 0.985;
+    const cx = cv.width/2, cy = cv.height/2;
+    for (const p of P) { p.vx += (cx-p.x)*0.0016; p.vy += (cy-p.y)*0.0016; }
+    for (let i = 0; i < P.length; i++) for (let j = i+1; j < P.length; j++) {
+      const a = P[i], b = P[j];
+      let dx = b.x-a.x, dy = b.y-a.y, d2 = dx*dx+dy*dy;
+      if (d2 > 42000 || d2 === 0) continue;
+      const f = 210/d2; dx *= f; dy *= f;
+      a.vx -= dx; a.vy -= dy; b.vx += dx; b.vy += dy;
+    }
+    for (const [i,j] of E) {
+      const a = P[i], b = P[j]; if (!a || !b) continue;
+      const dx = b.x-a.x, dy = b.y-a.y, d = Math.hypot(dx,dy)||1, f = (d-58)*0.0045;
+      const ux = dx/d*f, uy = dy/d*f;
+      a.vx += ux; a.vy += uy; b.vx -= ux; b.vy -= uy;
+    }
+    for (const p of P) { p.x += p.vx *= 0.86; p.y += p.vy *= 0.86; pos.set(p.n.i, {x:p.x, y:p.y}); }
+  }
+
+  const colour = n => n.s !== "live" ? css("--shelved") : (n.o === "plugin" ? css("--plugin") : css("--live"));
+
+  function draw() {
+    ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,cv.width,cv.height);
+    ctx.translate(view.x, view.y); ctx.scale(view.k, view.k);
+    ctx.lineWidth = 1;
+    for (const [i,j] of E) {
+      const a = P[i], b = P[j]; if (!a || !b) continue;
+      const hot = picked && (a.n.i === picked.n.i || b.n.i === picked.n.i);
+      ctx.strokeStyle = hot ? css("--cost") : css("--rule");
+      ctx.globalAlpha = hot ? .9 : .45;
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    for (const p of P) {
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,6.2832); ctx.fillStyle = colour(p.n); ctx.fill();
+      if (p.n.u > 0) { ctx.strokeStyle = css("--ink"); ctx.lineWidth = 1.4; ctx.stroke(); }
+      if (picked && p.n.i === picked.n.i) {
+        ctx.strokeStyle = css("--cost"); ctx.lineWidth = 2.2;
+        ctx.beginPath(); ctx.arc(p.x,p.y,p.r+3.5,0,6.2832); ctx.stroke();
+      }
+    }
+    if (view.k > 1.35) {
+      ctx.fillStyle = css("--ink-faint"); ctx.font = "9px " + css("--mono");
+      for (const p of P) if (p.r > 4 || p.n.u > 0) ctx.fillText(p.n.n, p.x+p.r+3, p.y+3);
+    }
+  }
+  function frame(){ step(); draw(); requestAnimationFrame(frame); }
+
+  function at(ev) {
+    const rect = cv.getBoundingClientRect();
+    const x = ((ev.clientX-rect.left)*(cv.width/rect.width) - view.x)/view.k;
+    const y = ((ev.clientY-rect.top)*(cv.height/rect.height) - view.y)/view.k;
+    let best = null, bd = 196;
+    for (const p of P) { const d = (p.x-x)**2 + (p.y-y)**2; if (d < bd) { bd = d; best = p; } }
+    return best;
+  }
+  cv.addEventListener("click", ev => {
+    picked = at(ev);
+    if (!picked) { insp.hidden = true; return; }
+    const n = picked.n, outs = (outgoing.get(n.i)||[]).map(id => byId.get(id)?.n).filter(Boolean);
+    insp.hidden = false;
+    insp.innerHTML = `<h4>${esc(n.n)}</h4><div class="st">${esc(n.k)} · ${esc(n.s)} · ${n.t} tok · ${n.u} use${n.u===1?"":"s"}</div>
+      ${n.p ? `<div>${esc(n.p)}</div>` : ""}
+      ${outs.length ? `<ul>${outs.slice(0,8).map(x=>`<li>routes to ${esc(x)}</li>`).join("")}${outs.length>8?`<li>… ${outs.length-8} more</li>`:""}</ul>` : ""}`;
+  });
+  let drag = null;
+  cv.addEventListener("pointerdown", e => { drag = {x:e.clientX,y:e.clientY,vx:view.x,vy:view.y}; });
+  addEventListener("pointerup", () => drag = null);
+  addEventListener("pointermove", e => { if (drag) { view.x = drag.vx+(e.clientX-drag.x); view.y = drag.vy+(e.clientY-drag.y); } });
+  cv.addEventListener("wheel", e => { e.preventDefault();
+    view.k = Math.min(4, Math.max(.4, view.k * (e.deltaY < 0 ? 1.1 : .9))); }, {passive:false});
+  document.querySelectorAll(".hud button").forEach(b => b.addEventListener("click", () => {
+    filter = b.dataset.g;
+    document.querySelectorAll(".hud button").forEach(o => o.setAttribute("aria-pressed", String(o===b)));
+    picked = null; insp.hidden = true; build();
+  }));
+  frame();
+  return { ingest, kick: () => { alpha = Math.max(alpha, .35); } };
+})();
+
+/* ---- render ------------------------------------------------------------ */
+function render(first) {
+  const t = D.totals, shelvedN = D.nodes.filter(n => n.s !== "live").length;
+  $("sled").innerHTML = [
+    ["capabilities", fmt(D.nodes.length), ""], ["shelved", fmt(shelvedN), ""],
+    ["loaded now", fmt(t.live_tokens)+" tok", "on"],
+    ["reclaimed", "−"+fmt(t.before - t.live_tokens)+" tok", "on"],
+    ["routes-to edges", fmt(D.edges.length), ""],
+  ].map(([k,v,c]) => `<div class="cell"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join("");
+
+  const M = D.memory, gaps = M.learned.filter(l => l.kind === "gap").length;
+  $("mled").innerHTML = [
+    ["searches recorded", fmt(M.event_counts.lookup||0), ""],
+    ["invocations mined", fmt(M.event_counts.invocation||0), ""],
+    ["gaps found", fmt(gaps), gaps ? "warn" : ""],
+    ["projects tracked", fmt(Object.keys(M.projects).length), ""],
+    ["instruction files", fmt(M.instructions.length), ""],
+  ].map(([k,v,c]) => `<div class="cell"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join("");
+
+  $("learned").innerHTML = M.learned.length ? M.learned.map(l => `<div class="find">
+    <div class="h">[${esc(l.kind)}] ${esc(l.subject)}</div><div class="d">${esc(l.detail)}</div>
+    <ul>${l.evidence.slice(0,3).map(e=>`<li>${esc(e)}</li>`).join("")}</ul></div>`).join("")
+    : `<p>Nothing learned yet — run <code>harness lookup</code> a few times and check back.</p>`;
+
+  $("projects").innerHTML = Object.entries(M.projects)
+    .map(([k,v]) => [k, v, v.reduce((s,[,c])=>s+c,0)]).sort((a,b)=>b[2]-a[2]).slice(0,8)
+    .map(([k,uses]) => `<div class="box"><h3>${esc(shortProj(k))}</h3><ul>${
+      uses.slice(0,5).map(([n,c])=>`<li><span>${esc(n.replace(/^superpowers:/,""))}</span><b>${c}</b></li>`).join("")
+    }</ul></div>`).join("");
+
+  const rows = [{lbl:"capability index (all projects)", tok:M.index_tokens, idx:true}]
+    .concat(M.instructions.slice(0,6).map(i => ({lbl:`${i.proj}/${i.file}`, tok:i.tok})));
+  const maxTok = Math.max(...rows.map(r => r.tok), 1);
+  $("bars").innerHTML = rows.map(r => `<div class="bar"><div class="lbl">${esc(r.lbl)}</div>
+    <div class="track"><div class="fill ${r.idx?"idx":""}" style="width:${(100*r.tok/maxTok).toFixed(1)}%"></div></div>
+    <div class="num">${fmt(r.tok)} tok</div></div>`).join("");
+
+  const agents = D.fleet.projects.flatMap(p => p.agents);
+  const timed = agents.filter(a => a.secs != null);
+  const runningN = agents.filter(a => a.status === "running").length;
+  $("aled").innerHTML = [
+    ["agents recorded", fmt(agents.length), ""], ["running", fmt(runningN), runningN ? "on" : ""],
+    ["agent time", Math.round(timed.reduce((s,a)=>s+a.secs,0)/60)+"m", ""],
+    ["longest", clock(timed.length ? Math.max(...timed.map(a=>a.secs)) : null), ""],
+    ["projects", fmt(D.fleet.projects.length), ""],
+  ].map(([k,v,c]) => `<div class="cell"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join("");
+
+  // Remember which agents the reader had open, so a refresh does not close them.
+  openAgents = new Set([...document.querySelectorAll("details.agent[open]")].map(d => d.dataset.id));
+  $("fleet").innerHTML = D.fleet.projects.map(p => {
+    const live = p.agents.filter(a => a.status === "running").length;
+    return `<h3 style="font-family:var(--mono);font-size:.74rem;margin:1.1rem 0 .4rem;color:var(--ink-soft)">
+      ${esc(shortProj(p.name))} <span class="meta">${p.agents.length} agents${live?` · ${live} running`:""}</span></h3>` +
+      p.agents.slice(0,40).map(a => `<details class="agent" data-s="${esc(a.status)}" data-id="${esc(a.id)}"${
+        openAgents.has(a.id) ? " open" : ""}><summary>
+        <span class="lbl2">${esc(a.label)}</span>
+        <span class="meta">${esc(a.model||"?")} · ${a.turns} turns</span>
+        <span class="meta">${a.status==="running"?"running":clock(a.secs)}</span></summary>
+        <div class="brain">
+          <div><h5>reached for</h5>${a.tools.length ? a.tools.map(([n,c])=>`<span class="chip">${esc(n)} ${c}</span>`).join("") : '<span class="meta">none</span>'}</div>
+          <div><h5>files</h5>${a.files.length ? `<ul class="plain">${a.files.map(f=>`<li title="${esc(f)}">${esc(f)}</li>`).join("")}</ul>` : '<span class="meta">none</span>'}</div>
+          <div><h5>ran</h5>${a.cmds.length ? `<ul class="plain">${a.cmds.map(c=>`<li title="${esc(c)}">$ ${esc(c)}</li>`).join("")}</ul>` : '<span class="meta">none</span>'}</div>
+          ${a.report ? `<div class="rep">${esc(a.report)}</div>` : ""}
+        </div></details>`).join("") +
+      (p.agents.length > 40 ? `<div class="meta" style="margin-top:.4rem">… ${p.agents.length-40} more not shown</div>` : "");
+  }).join("");
+
+  graph.ingest();
+  $("pulse").textContent = `${runningN} running · updated ${new Date().toLocaleTimeString("en-GB")}`;
+  $("foot").textContent = `${D.nodes.length} capabilities · ${D.edges.length} routes-to edges · `
+    + `${agents.length} agents · read from ~/.claude/harness.db and the transcripts`;
+}
+
+function refresh() {
+  fetch("/api/data", {cache:"no-store"})
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then(next => { const first = D === null; D = next; render(first); })
+    .catch(() => { $("pulse").textContent = "reconnecting…"; });
+}
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

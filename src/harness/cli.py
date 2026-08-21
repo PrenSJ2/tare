@@ -21,6 +21,7 @@ from . import (
     activate as activate_mod,
     audit as audit_mod,
     buckets,
+    console as console_mod,
     db,
     doctor as doctor_mod,
     edges,
@@ -270,6 +271,21 @@ def _cmd_learned(conn, args) -> int:
     return 0
 
 
+def _cmd_console(conn, args) -> int:
+    if args.start:
+        if console_mod.is_up(args.port):
+            print(f"already running at {console_mod.url(args.port)}")
+            return 0
+        console_mod.ensure(args.port)
+        print(f"console starting at {console_mod.url(args.port)}")
+        return 0
+    if console_mod.is_up(args.port):
+        print(f"console: running at {console_mod.url(args.port)}")
+        return 0
+    print("console: not running — start it with `harness console --start`")
+    return 0
+
+
 def _cmd_viewer(conn, args) -> int:
     if args.stop:
         print("stop it in the terminal running it, or: pkill -f agent-flow-app")
@@ -441,6 +457,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("name")
 
     add("update", "report which plugins are behind their marketplace", _cmd_update)
+    p = add("console", "the capability graph, memory and agent record, live", _cmd_console)
+    p.add_argument("--start", action="store_true")
+    p.add_argument("--port", type=int, default=console_mod.DEFAULT_PORT)
+
     p = add("viewer", "the live agent-flow fleet viewer", _cmd_viewer)
     p.add_argument("--start", action="store_true", help="start it if it is not up")
     p.add_argument("--stop", action="store_true")
