@@ -52,6 +52,16 @@ TAG_PROMPT_SIGNATURE = (
     "You are tagging a single Claude Code capability for a local search index."
 )
 
+# The same problem, one caller further on: `harvest` also shells out to
+# `claude -p`, so it also writes a transcript into the corpus this reads. Every
+# such prompt must open with one of these, or tare starts mining its own
+# exhaust and the usage signal drifts upward with every run.
+HARVEST_PROMPT_SIGNATURE = (
+    "You are extracting a durable engineering finding for a local knowledge base."
+)
+
+OWN_PROMPT_SIGNATURES = (TAG_PROMPT_SIGNATURE, HARVEST_PROMPT_SIGNATURE)
+
 # Tool names that record a capability invocation, and which `input` key on
 # that tool_use block carries the invoked name. "Task" is included alongside
 # "Agent" because different Claude Code builds have used both names for the
@@ -377,19 +387,25 @@ def _user_text(obj) -> str:
 
 
 def _is_tag_exhaust(parsed: list[dict]) -> bool:
-    """True if this transcript is tare's own `claude -p` tagging call.
+    """True if this transcript is one of tare's own `claude -p` calls.
 
     Structural, not a bare substring scan of the raw file: the signature must
     open a `type: "user"` message, AND the session must contain no assistant
-    `tool_use` anywhere -- a tagging call only ever gets a text reply back.
+    `tool_use` anywhere -- these calls only ever get a text reply back.
     See the module docstring for the known false-positive edge this accepts.
+
+    Checks EVERY signature tare uses, not just tagging's. A new caller that
+    shells out and forgets to register its opening line pollutes the usage
+    signal silently, which is why the constants live here rather than beside
+    each caller.
     """
     has_signature = False
     has_tool_use = False
     for obj in parsed:
         obj_type = obj.get("type")
         if obj_type == "user":
-            if _user_text(obj).strip().startswith(TAG_PROMPT_SIGNATURE):
+            text = _user_text(obj).strip()
+            if any(text.startswith(sig) for sig in OWN_PROMPT_SIGNATURES):
                 has_signature = True
         elif obj_type == "assistant":
             content = obj.get("message", {}).get("content")

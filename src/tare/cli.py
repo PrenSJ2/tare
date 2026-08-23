@@ -26,6 +26,7 @@ from . import (
     db,
     brain as brain_mod,
     doctor as doctor_mod,
+    harvest as harvest_mod,
     history as history_mod,
     edges,
     install as install_mod,
@@ -162,6 +163,34 @@ def _cmd_recall(conn, args) -> int:
     project = args.project or _Path.cwd().name
     results = brain_mod.recall(conn, args.query, project=project, limit=args.limit)
     print(brain_mod.render(results))
+    return 0
+
+
+def _cmd_harvest(conn, args) -> int:
+    """Turn a repository's fix commits into findings."""
+    repo = paths.working_tree(args.repo)
+    if not (repo / ".git").exists():
+        print(f"{repo} is not a git repository")
+        return 1
+    if not harvest_mod.subprocess.run(["which", "claude"], capture_output=True).returncode == 0:
+        print("`claude` is not on PATH -- harvesting needs it to read the commits")
+        return 1
+
+    found = harvest_mod.candidates(repo, since=args.since, limit=args.limit)
+    print(f"{len(found)} self-explaining fix commit(s) in {repo.name} since {args.since}")
+    if not found:
+        return 0
+    if not args.apply:
+        print("dry run -- nothing will be written. Re-run with --apply.\n")
+
+    results = harvest_mod.harvest(conn, repo, since=args.since, limit=args.limit,
+                                  apply=args.apply, on_event=print)
+    written = [r for r in results if not r.skipped]
+    print(f"\n{len(written)} finding(s) {'written' if args.apply else 'proposed'}, "
+          f"{len(results) - len(written)} skipped")
+    for r in written:
+        print(f"\n  {r.name}  ({r.scope})")
+        print(f"    {r.claim[:150]}")
     return 0
 
 
@@ -533,6 +562,12 @@ def main(argv: list[str] | None = None) -> int:
     p = add("lookup", "find a capability by intent", _cmd_lookup)
     p.add_argument("query")
     p.add_argument("--limit", type=int, default=5)
+
+    p = add("harvest", "turn a repo's fix commits into findings", _cmd_harvest)
+    p.add_argument("--repo", default=".")
+    p.add_argument("--since", default="6 months ago")
+    p.add_argument("--limit", type=int, default=10)
+    p.add_argument("--apply", action="store_true", help="write them (default is a dry run)")
 
     p = add("recall", "what is already known about something", _cmd_recall)
     p.add_argument("query", nargs="?")

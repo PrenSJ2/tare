@@ -63,6 +63,16 @@ def skill_install_path() -> Path:
     return skills_dir() / "tare" / "SKILL.md"
 
 
+def working_tree(value: str) -> Path:
+    """A user-supplied working directory, resolved.
+
+    Here rather than at the call site because `~` expansion is home
+    resolution, and this module exists so home resolution happens in exactly
+    one place -- even when the target is a repository rather than ~/.claude.
+    """
+    return Path(value).expanduser().resolve()
+
+
 def est_tokens(text: str) -> int:
     """Rough token count for a piece of always-loaded text.
 
