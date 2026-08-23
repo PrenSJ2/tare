@@ -178,6 +178,32 @@ def _orchestration(redact: bool) -> dict:
     }
 
 
+def _findings(conn: sqlite3.Connection) -> dict:
+    """The knowledge base: what has been learned, grouped by reach.
+
+    Sent whole rather than searched, because the panel is a browse surface --
+    24 findings is a list you read, not a corpus you query. `tare recall` is
+    the query path.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT name, scope, confidence, summary, superseded_by, projects, tags"
+            "  FROM findings ORDER BY scope, name").fetchall()
+    except sqlite3.Error:
+        # The table only exists once something has been harvested.
+        return {"items": [], "counts": {}}
+    items = [{
+        "n": r["name"], "sc": r["scope"], "c": r["confidence"],
+        "s": (r["summary"] or "")[:240], "sup": r["superseded_by"],
+        "p": [x for x in (r["projects"] or "").split(",") if x],
+        "t": [x for x in (r["tags"] or "").split(",") if x],
+    } for r in rows]
+    counts: dict[str, int] = {}
+    for item in items:
+        counts[item["sc"]] = counts.get(item["sc"], 0) + 1
+    return {"items": items, "counts": counts}
+
+
 def _shells() -> dict:
     """What each project is running in a shell right now.
 
@@ -271,6 +297,10 @@ def _build_payload(*, redact: bool = False) -> dict:
             "index_tokens": report.total_tokens,
             "event_counts": {r["kind"]: r["c"] for r in
                              conn.execute("SELECT kind, COUNT(*) c FROM events GROUP BY kind")},
+            # Findings are the other half of memory, and the more useful half:
+            # `learned` is what usage taught the tool about itself, this is
+            # what the operator learned about the systems they build.
+            "findings": _findings(conn),
         }
     finally:
         conn.close()
