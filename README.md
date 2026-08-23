@@ -186,6 +186,52 @@ out, are excluded as tagging exhaust, and never existed for an edit made in an
 editor — so a capability with **no recorded session edit was not necessarily
 written by hand**, and nothing here claims it was.
 
+## Findings — what you have learned, as opposed to what you can run
+
+```bash
+tare recall --reindex "docker containers not starting after reboot"
+tare recall "dns name wont resolve but dig works"
+```
+
+`lookup` answers *what capability does X*. `recall` answers *what do I already
+know about X*: a claim about how something behaves, learned the hard way,
+usually at some cost.
+
+Findings live as one small file each in `~/.claude/brain/findings/`, with
+frontmatter and `[[wikilinks]]`. Files are the source of truth; the index is
+rebuilt from them.
+
+### Scope is the field a CLAUDE.md cannot express
+
+A project instruction file is a per-directory thing, so a hard-won lesson
+written in one repository is invisible from every other. That is the single
+reason findings left it:
+
+| scope | surfaces |
+|---|---|
+| `universal` | in every project |
+| `tool` | wherever that tool is in play |
+| `project` | in its own project, and ranked down elsewhere — never withheld |
+
+Harvested from one real file, `homelab/CLAUDE.md`, **nine of sixteen findings were
+universal** — things like "macOS caches negative DNS answers", "`restart:
+unless-stopped` does not mean start-on-boot", "a stale process answering looks
+like success". All of them were reachable only from a camera project.
+
+### Superseded, not deleted
+
+`superseded_by` points at whatever replaced a finding. The old one stays
+searchable and is returned flagged, because *we used to believe X and here is
+why we stopped* is the part that prevents re-deriving it. Asking about a
+superseded belief returns the current answer first and the history second.
+
+### Out of scope is a weight, not a filter
+
+Ranked down, never hidden. An earlier version sorted on scope instead, and
+`limit` then removed project-scoped findings entirely — a search that silently
+withheld something you had written, which is precisely the failure this exists
+to fix.
+
 ## Where knowledge lives
 
 Three kinds, three homes, no duplication:

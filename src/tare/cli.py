@@ -24,6 +24,7 @@ from . import (
     categories as categories_mod,
     console as console_mod,
     db,
+    brain as brain_mod,
     doctor as doctor_mod,
     history as history_mod,
     edges,
@@ -143,6 +144,24 @@ def _cmd_domains(conn, args) -> int:
             print(f"  {name}{shelved}{reason}")
         if not wanted and len(members) > len(show):
             print(f"  … {len(members) - len(show)} more -- `tare domains {domain}`")
+    return 0
+
+
+def _cmd_recall(conn, args) -> int:
+    """What is already known about something, as opposed to what can run."""
+    from pathlib import Path as _Path  # noqa: PLC0415
+
+    if args.reindex:
+        print(f"indexed {brain_mod.reindex(conn)} finding(s) from {brain_mod.brain_dir()}")
+        if not args.query:
+            return 0
+    if not args.query:
+        print("usage: tare recall \"<what you want to know>\"")
+        return 1
+
+    project = args.project or _Path.cwd().name
+    results = brain_mod.recall(conn, args.query, project=project, limit=args.limit)
+    print(brain_mod.render(results))
     return 0
 
 
@@ -514,6 +533,12 @@ def main(argv: list[str] | None = None) -> int:
     p = add("lookup", "find a capability by intent", _cmd_lookup)
     p.add_argument("query")
     p.add_argument("--limit", type=int, default=5)
+
+    p = add("recall", "what is already known about something", _cmd_recall)
+    p.add_argument("query", nargs="?")
+    p.add_argument("--project", help="scope context (default: the current directory name)")
+    p.add_argument("--limit", type=int, default=5)
+    p.add_argument("--reindex", action="store_true", help="re-read the findings from disk first")
 
     add("history", "what was added, what changed, and what a session edited", _cmd_history)
 
