@@ -34,18 +34,72 @@ back. **The context cost drops; the capability does not.** A token saving that
 loses a capability is a regression, not a win, and the test suite asserts that
 directly.
 
-## Install
+## Setup
+
+Everything below runs locally against your own `~/.claude`. Nothing is uploaded
+anywhere, and no account or key is needed.
+
+**Requirements:** Python 3.11+, git, and the
+[`claude` CLI](https://docs.claude.com/en/docs/claude-code) already set up —
+tare reads the transcripts and configuration it leaves behind, so it has
+nothing to work with otherwise.
 
 ```bash
-uv tool install --editable .
-tare install      # writes the lookup skill and a SessionStart hook
-tare build        # scan + mine + tag + edges + buckets + index
-tare audit        # what your always-loaded context costs
+git clone https://github.com/PrenSJ2/tare.git && cd tare
+uv tool install .          # or: pipx install .
 ```
 
-`tare install` comes first and is not optional: the skill and hook are what
-make a shelved capability reachable, so `vault --apply` refuses to run without
-them.
+Then, in this order:
+
+```bash
+tare install               # the lookup skill + a SessionStart hook
+tare build                 # scan + mine + tag + edges + buckets + index
+tare audit                 # what your always-loaded context costs today
+```
+
+**`tare install` comes first and is not optional.** The skill and the hook are
+what make a shelved capability reachable again; `tare vault --apply` refuses to
+run without them, because shelving something you can no longer find is just
+deleting it slowly.
+
+`tare build` is the slow one — it shells out to `claude -p` once per untagged
+capability to normalise descriptions, and caches by content hash so a re-run is
+free. A few hundred capabilities takes a few minutes the first time. Everything
+except `tag` works without the CLI if you would rather skip it.
+
+Read `tare audit` before shelving anything. It tells you what your setup costs
+per turn and how much of it has never been invoked, which is the number the
+rest of the tool exists to move.
+
+## Related repositories
+
+tare works on its own. Two optional pieces extend it, and it degrades to its
+own two views without either:
+
+| | |
+|---|---|
+| **[swarm](https://github.com/PrenSJ2/swarm)** | Reads Claude Code transcripts into a picture of what your subagents actually did. tare's console uses it for the agent views and for showing which shells are running. Also carries `nightshift` (unattended overnight continuation, behind a production gate) and `keepgoing` (a `Stop` hook so a session carries on instead of waiting to be told to). |
+| **[tare-console](https://github.com/PrenSJ2/agent-flow)** | The UI. A fork of [patoles/agent-flow](https://github.com/patoles/agent-flow) (Apache-2.0), kept as a git checkout that can still pull from upstream rather than a vendored copy that silently drifts. See `NOTICE.md` there for attribution. |
+
+```bash
+# optional — agent views, and `swarm nightshift` / `swarm keepgoing`
+git clone https://github.com/PrenSJ2/swarm.git && cd swarm && uv tool install .
+
+# optional — the console UI
+git clone https://github.com/PrenSJ2/agent-flow.git && cd agent-flow
+pnpm install && pnpm run build:app
+```
+
+tare looks for the console at `~/Documents/Code/agent-flow`. If you cloned it
+somewhere else, point at it:
+
+```bash
+export TARE_CONSOLE_DIR=/path/to/agent-flow
+```
+
+**A note if you run the console:** the fork inherits upstream's anonymous usage
+telemetry, which is enabled by default and reports to the upstream project's
+Supabase. Set `DO_NOT_TRACK=1` to turn it off.
 
 ## Shelving
 
