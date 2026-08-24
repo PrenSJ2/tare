@@ -6,7 +6,7 @@ an operator if something tells them it exists, and that "something" is this
 skill plus the hook that keeps its own health checkable. Getting install/
 uninstall wrong either breaks the operator's whole settings.json (rule 1) or
 silently corrupts another tool's hook (rule 2) -- both defects the previous
-build shipped. See the design notes.
+build shipped.
 """
 
 from __future__ import annotations

@@ -3,7 +3,7 @@
 Most tests here are named after either one of the guard's five properties
 (transitivity, routes-to-only, any-origin seeding, attribution, cycle
 safety) or one of the numbered requirements in the task brief /
-the design notes, because the failure mode each one prevents is the
+a real defect, because the failure mode each one prevents is the
 point, not the happy path.
 """
 

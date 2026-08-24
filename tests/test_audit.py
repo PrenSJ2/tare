@@ -343,7 +343,7 @@ def golden_safe_home(tmp_path, monkeypatch):
 @pytestmark_golden
 def test_golden_db_audit_runs_and_reports_the_documented_bucket_split(golden_safe_home):
     a = audit.audit(_golden_conn())
-    # These bucket counts are the ones documented in the design notes /
+    # These bucket counts are the ones documented in the original measured run /
     # the task spec as measured on the real machine.
     assert a.by_bucket == {"always": 17, "sometimes": 5, "rarely": 186}
 

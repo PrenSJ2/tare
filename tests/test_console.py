@@ -30,11 +30,15 @@ def test_payload_is_json_serialisable(fake_home):
     json.dumps(console.payload())
 
 
-def test_it_degrades_without_swarm(fake_home, monkeypatch):
-    """harness must work when swarm is absent — the agent view goes away, the
-    other two do not."""
+def test_it_degrades_without_the_agent_reader(fake_home, monkeypatch):
+    """The capability views must survive the agent reader being unavailable.
+
+    It ships in the same package now, so it is no longer a missing dependency
+    — but it still reads a corpus that can be absent, unreadable or mid-write,
+    and the two capability views must not go down with it.
+    """
     monkeypatch.setattr(console, "_reader", lambda: None)
-    p = console.payload()
+    p = console.payload(fresh=True)
     assert p["fleet"]["projects"] == []
     assert "swarm is not installed" in p["fleet"]["unavailable"]
     assert p["nodes"] is not None

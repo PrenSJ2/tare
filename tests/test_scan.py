@@ -3,7 +3,7 @@
 This file was the most defect-prone in the previous build -- five separate
 rounds of fixes, each found only after the previous shipped. Most tests
 here are named after one of the ten numbered rules in the task brief /
-the design notes rather than after a feature, because the failure mode
+a real defect rather than after a feature, because the failure mode
 each rule prevents is the point, not the happy path.
 """
 
@@ -281,7 +281,7 @@ def test_scan_agents_does_not_create_vault(fake_home):
 
 
 def test_vaulted_id_uses_declared_frontmatter_name_not_manifest_key(fake_home):
-    """Real case from the design notes: agents/architect-review.md declares
+    """Real case: agents/architect-review.md declares
     name: architect-reviewer. The manifest is keyed by filesystem name
     (architect-review); the node id must use the declared name.
     """

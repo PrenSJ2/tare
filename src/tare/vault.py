@@ -4,7 +4,7 @@ This module holds the ONLY copy of whatever it stashes. Everything here is
 written the way it is because the first version of this file lost data, or
 lied about having kept it, in a specific and previously-observed way. Each
 rule below has a matching test for the failure it prevents; see
-the design notes for the incident each one is named after.
+the module docstrings for the incident each one is named after.
 
 Layout, all under `paths.vault_dir()`:
     manifest.json          {"skills": {key: {"restored": bool}}, "agents": {...}}

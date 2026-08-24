@@ -71,35 +71,46 @@ Read `tare audit` before shelving anything. It tells you what your setup costs
 per turn and how much of it has never been invoked, which is the number the
 rest of the tool exists to move.
 
-## Related repositories
+## What comes with it
 
-tare works on its own. Two optional pieces extend it, and it degrades to its
-own two views without either:
+One install, three things:
 
 | | |
 |---|---|
-| **[swarm](https://github.com/PrenSJ2/swarm)** | Reads Claude Code transcripts into a picture of what your subagents actually did. tare's console uses it for the agent views and for showing which shells are running. Also carries `nightshift` (unattended overnight continuation, behind a production gate) and `keepgoing` (a `Stop` hook so a session carries on instead of waiting to be told to). |
-| **[tare-console](https://github.com/PrenSJ2/agent-flow)** | The UI. A fork of [patoles/agent-flow](https://github.com/patoles/agent-flow) (Apache-2.0), kept as a git checkout that can still pull from upstream rather than a vendored copy that silently drifts. See `NOTICE.md` there for attribution. |
+| **the capability half** | `scan` / `mine` / `audit` / `vault` / `lookup` — what your setup costs and what it never uses |
+| **the knowledge half** | `recall` / `harvest` — findings, searchable across every project |
+| **the agent half** | `swarm watch` / `monitor` / `shells` — what your subagents actually did, read from transcripts rather than hooks. Plus `nightshift` (carry a run forward overnight behind a production gate) and `keepgoing` (a `Stop` hook so a session continues instead of waiting to be told to) |
+
+The agent half installs its own hooks and keeps its own commands:
 
 ```bash
-# optional — agent views, and `swarm nightshift` / `swarm keepgoing`
-git clone https://github.com/PrenSJ2/swarm.git && cd swarm && uv tool install .
+swarm install              # register the hooks
+swarm shells               # what every session is running right now
+swarm watch                # live view of this session's agents
+swarm nightshift recap     # what ran overnight
+```
 
-# optional — the console UI
+### The console
+
+The UI is optional and lives in its own repository, because it is a fork:
+
+```bash
 git clone https://github.com/PrenSJ2/agent-flow.git && cd agent-flow
 pnpm install && pnpm run build:app
+tare console --start       # the API, 127.0.0.1:4242
+tare viewer --start        # the UI,  127.0.0.1:3939
 ```
 
-tare looks for the console at `~/Documents/Code/agent-flow`. If you cloned it
-somewhere else, point at it:
+It is a fork of [patoles/agent-flow](https://github.com/patoles/agent-flow)
+(Apache-2.0), kept as a git checkout that can still pull from upstream rather
+than a vendored copy that silently drifts. See `NOTICE.md` there.
 
-```bash
-export TARE_CONSOLE_DIR=/path/to/agent-flow
-```
+tare looks for it at `~/Documents/Code/agent-flow`; point `TARE_CONSOLE_DIR`
+elsewhere if you cloned it somewhere else.
 
-**A note if you run the console:** the fork inherits upstream's anonymous usage
-telemetry, which is enabled by default and reports to the upstream project's
-Supabase. Set `DO_NOT_TRACK=1` to turn it off.
+**One thing to know before you run it:** the fork inherits upstream's anonymous
+usage telemetry, which is on by default and reports to the upstream project's
+Supabase. `DO_NOT_TRACK=1` turns it off.
 
 ## Shelving
 
@@ -176,12 +187,7 @@ anything.
 It reports and changes nothing. Letting usage silently re-rank search would
 make the results unexplainable the first time they surprised you.
 
-## The console
-
-```bash
-tare console --start    # the API, on 127.0.0.1:4242
-tare viewer --start     # the UI, on 127.0.0.1:3939
-```
+## What the console shows
 
 Three views over the same machine:
 
@@ -206,10 +212,6 @@ none of them. Names are namespaced per session on the way in
 (`homelab#cc75/code-reviewer`) and the session roots are laid out on a ring sized
 from the spacing between neighbours, so two sessions sit close together and a
 dozen spread out only as far as they must.
-
-The UI is a fork of [agent-flow](https://github.com/patoles/agent-flow), kept
-as a git checkout that can still pull from upstream rather than a vendored
-copy that silently drifts. See `NOTICE.md` in that repository for attribution.
 
 Both bind loopback with no flag to change it. They read transcripts, file
 paths and shell commands — a developer's private working record — so being
@@ -333,12 +335,13 @@ tare update   which plugins are behind their marketplace
 
 ## Notes for anyone working on this
 
-`the design notes` is worth reading first. This repository was destroyed
-once and rebuilt from those notes, and its addendum records six defects that
-**290 passing tests did not catch** — including all four scanners returning
-without `conn.commit()`, so every scan wrote nothing to disk while the suite
-passed, because every test reused one connection where uncommitted writes are
-still visible.
+**Validate against real data, not fixtures alone.** The lesson is worth more
+than the anecdote: a run of 290 passing tests once hid six real defects here,
+including all four scanners returning without `conn.commit()` — every scan
+wrote nothing to disk while the suite stayed green, because the tests reused a
+single connection, and uncommitted writes are visible on the connection that
+made them.
 
-The habit that found them: validate against real data and a preserved copy of
-the live database, not fixtures alone.
+A green suite proves the code does what the tests say. It does not prove the
+tests say the right thing. Every significant claim in this repository was
+checked against a real `~/.claude` before it was believed.

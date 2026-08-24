@@ -1,7 +1,7 @@
 """Tests for the vault -- the git-backed store holding the only copy of
 shelved user-authored skills and agents.
 
-Every test here is named after a defect recorded in the design notes
+Every test here is named after a real defect this project shipped once
 rather than after a feature: this module's failure behaviour matters more
 than anything else in the codebase, so the failure modes are the point.
 """

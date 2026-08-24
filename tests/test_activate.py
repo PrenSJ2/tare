@@ -1,7 +1,7 @@
 """Tests for activate.py: the way back from the vault, and from a disabled
 plugin.
 
-Named after the rules in the task brief / the design notes: the
+Named after the rule each one enforces: the
 ambiguity and name-divergence defects that made the previous build's
 version of this file permanently strand real capabilities.
 """
@@ -93,7 +93,7 @@ def test_activate_on_already_live_node_is_a_noop(fake_home):
 
 
 def test_activate_resolves_declared_name_diverging_from_filesystem_key(fake_home):
-    # Real case from the design notes: agents/architect-review.md declares
+    # Real case: agents/architect-review.md declares
     # name: architect-reviewer. The vault manifest key is "architect-review"
     # (filesystem stem); the operator and the graph both use the declared
     # name. Both must work.

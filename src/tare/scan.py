@@ -2,7 +2,7 @@
 
 This was the most defect-prone file in the previous build -- five separate
 rounds of fixes, each found only after the previous one shipped (see
-the design notes). Every rule below is written in from the start
+a real incident). Every rule below is written in from the start
 because of that history, not as a nice-to-have; each has a matching test
 named after the failure it prevents.
 
@@ -350,7 +350,7 @@ def _classify_skill_symlink(entry: Path) -> dict:
 
 def _promoted_skill_node(entry: Path, resolved: Path) -> dict:
     """A symlink in skills_dir() that resolves inside the plugin cache: this
-    skill has been promoted (the design notes mechanism 3), and its usage
+    skill has been promoted (shelving mechanism 3), and its usage
     history lives under the plugin-scoped id, not `skill:<name>`. Rebuild
     that id from the marketplace/plugin path components rather than
     inventing a fresh one -- a fresh id here is exactly the promote ->
@@ -621,7 +621,7 @@ def _enabled_plugins() -> dict:
     """`{"<plugin>@<marketplace>": bool}` read from settings.json's
     `enabledPlugins`. A missing file, a missing key, or a plugin simply not
     mentioned all mean "enabled" -- shelving a wholly-unused plugin
-    (the design notes mechanism 2) works by writing an explicit `false`, never
+    (shelving mechanism 2) works by writing an explicit `false`, never
     by omission, so absence must default to enabled or every installed-but-
     never-configured plugin would read as disabled.
     """
@@ -642,7 +642,7 @@ def scan_plugin_skills(conn) -> int:
     'plugin-disabled' depending on settings.json.
 
     No vault interaction anywhere in here -- the vault only ever holds
-    user-authored capabilities (the design notes), so there is nothing here to
+    user-authored capabilities, so there is nothing here to
     gate on `is_initialized()` for.
     """
     # Ids already claimed by a promotion. scan_user_skills upserts a

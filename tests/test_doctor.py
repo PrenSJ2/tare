@@ -1,6 +1,6 @@
 """Tests for doctor.py: drift detection.
 
-Named after the rules in the task brief / the design notes --
+Named after the rule each one enforces --
 especially rule 1 (strictly read-only, must never create a vault) and rule
 5 (do not cry wolf on legitimate states).
 """

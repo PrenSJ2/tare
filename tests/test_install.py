@@ -1,7 +1,7 @@
 """Tests for install.py: the harness skill + SessionStart hook, and the
 settings.json writer everything else in this module leans on.
 
-Named after the rules in the task brief / the design notes, not just
+Named after the rule each one enforces, not just
 the happy path -- the failure modes are the point.
 """
 

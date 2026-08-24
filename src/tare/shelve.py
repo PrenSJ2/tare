@@ -2,7 +2,7 @@
 
 This is the destructive end of harness: a wrong candidate here takes a real
 capability out of the operator's working configuration. Three mechanisms,
-matching the design notes:
+the three shelving mechanisms:
 
     1. `shelve_user`    -- user-authored skills/agents -> `vault.stash`.
     2. `shelve_plugins` -- wholly-unused plugins -> `enabledPlugins: false`.

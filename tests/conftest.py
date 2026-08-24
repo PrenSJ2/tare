@@ -25,3 +25,33 @@ def fake_home(tmp_path, monkeypatch):
     (home / "projects").mkdir(parents=True)
     monkeypatch.setenv("TARE_HOME", str(home))
     return home
+
+
+@pytest.fixture
+def swarm_home(tmp_path, monkeypatch):
+    """An isolated ~/.claude for the agent-observation half.
+
+    Separate from `fake_home` only because that half reads its root from
+    SWARM_HOME. Same rule applies: no test may touch the real configuration.
+    """
+    home = tmp_path / "claude"
+    (home / "runs").mkdir(parents=True)
+    monkeypatch.setenv("SWARM_HOME", str(home))
+    monkeypatch.setenv("TARE_HOME", str(home))
+    return home
+
+
+@pytest.fixture(autouse=True)
+def _clear_payload_cache():
+    """The console payload is cached globally for a few seconds.
+
+    Without this, one test's payload answers another test's assertion — and
+    because the cache is populated from the REAL ~/.claude when a test forgets
+    its fixture, a test could pass on data it never created. That is exactly
+    how `test_it_degrades_without_swarm` passed while asserting nothing.
+    """
+    from tare import console
+
+    console._PAYLOAD_CACHE = None
+    yield
+    console._PAYLOAD_CACHE = None

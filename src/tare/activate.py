@@ -1,7 +1,7 @@
 """The way back: `activate` brings a shelved capability live again,
 `deactivate` reverses that.
 
-Two mechanisms a name can resolve to (the design notes mechanisms 1 and 2/3):
+Two mechanisms a name can resolve to (shelving mechanisms 1 and 2/3):
 a vaulted user-authored skill/agent (undo via `vault.restore`), or a
 wholly-disabled plugin (flip it back on in `enabledPlugins`). `deactivate`
 only ever reverses the first -- it must say so plainly rather than quietly

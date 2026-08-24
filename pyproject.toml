@@ -1,16 +1,22 @@
 [project]
 name = "tare"
 version = "0.2.0"
-description = "Find what your Claude Code setup actually costs, and shelve what it never uses."
+description = "Find what your Claude Code setup costs, shelve what it never invokes, and see what your agents actually did."
 requires-python = ">=3.11"
 dependencies = ["pyyaml"]
 
 [project.scripts]
 tare = "tare.cli:run"
+# The agent half. Kept as separate executables because both are registered as
+# hook commands in settings.json BY ABSOLUTE PATH -- an existing install points
+# at these names, and renaming them would silently orphan the hooks.
+swarm = "swarm.cli:main"
+swarm-hook = "swarm.hook:main"
+swarm-keepgoing = "swarm.keepgoing_hook:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/tare"]
+packages = ["src/tare", "src/swarm"]
