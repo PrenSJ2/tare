@@ -161,25 +161,86 @@ def child_env() -> dict:
 # Recommendation text that ends the shift. Matched on word boundaries against
 # the recommendation, and deliberately broad: a false refusal costs one night,
 # a false pass costs whatever it touched.
-_PRODUCTION_PATTERNS: tuple[tuple[str, str], ...] = (
-    (r"\bdeploy(ing|ment|s)?\b", "deploys"),
-    (r"\brelease[sd]?\b", "releases"),
-    (r"\bpublish(ing|ed)?\b", "publishes"),
-    (r"\bship (it|this|to)\b", "ships"),
-    (r"\bmigrat(e|ion|ions|ing)\b", "runs a migration"),
-    (r"\bproduction\b|\bprod\b", "names production"),
-    (r"\bpush (to )?(main|master|origin|upstream|remote)\b", "pushes"),
-    (r"\bmerge (to |into )?(main|master)\b", "merges to a default branch"),
-    (r"\b(npm|pnpm|yarn) publish\b", "publishes a package"),
-    (r"\bterraform (apply|destroy)\b", "changes infrastructure"),
-    (r"\bkubectl (apply|delete)\b", "changes a cluster"),
-    (r"\bdrop (table|database)\b", "drops data"),
-    (r"\b(rotate|revoke) (a )?(key|token|secret|credential)", "touches credentials"),
-    (r"\b(api[_ -]?key|secret|credential|\.env\b)", "touches secrets"),
-    (r"\bcharge\b|\blive (mode|key)\b", "touches payments"),
-    (r"\bemail (the |our |customers|users)", "contacts people"),
-    (r"\bforce[- ]push\b", "force-pushes"),
+# Two tiers, because a keyword gate over prose refuses far more than it should.
+#
+# Measured on one real 1,383-message session: the single-tier version refused
+# 61 times, on `deploy` `publish` `release` `production` `secret` `migration`
+# `charge` — the ordinary vocabulary of an app that takes payments and
+# publishes listings. It stopped work over "the first migration is in" (a Dart
+# refactor) and "the publish-gate agent found" (an agent's NAME).
+#
+# The distinction that matters is not which word appears, it is whether the
+# session is about to DO the thing or merely describing it.
+
+# Tier 1 — literal commands. These are not prose and never appear by accident,
+# so they block wherever they appear, in any tense.
+_PRODUCTION_COMMANDS: tuple[tuple[str, str], ...] = (
+    (r"\bterraform\s+(apply|destroy)\b", "runs terraform"),
+    (r"\bkubectl\s+(apply|delete)\b", "changes a cluster"),
+    (r"\b(npm|pnpm|yarn)\s+publish\b", "publishes a package"),
+    (r"\bdrop\s+(table|database)\b", "drops data"),
+    (r"\bgit\s+push\s+(-f|--force)", "force-pushes"),
+    (r"\bforce[- ]push(?:es|ing)?\b", "force-pushes"),
+    (r"\brm\s+-rf\b", "deletes recursively"),
 )
+
+# Tier 2 — verbs that only block when the sentence is FORWARD-LOOKING. Base
+# form only: `deployed`, `deploying`, `deployment`, `migration` and
+# `publish-gate` are descriptions, not intentions.
+_PRODUCTION_VERBS = (
+    (r"deploy", "deploys"), (r"release", "releases"), (r"publish", "publishes"),
+    (r"migrate", "runs a migration"), (r"ship\s+(it|this|to)", "ships"),
+    (r"push\s+(to\s+)?(main|master|origin|upstream|remote)", "pushes"),
+    (r"merge\s+(to\s+|into\s+)?(main|master)", "merges to a default branch"),
+    (r"(rotate|revoke)\s+(the\s+|a\s+)?(key|token|secret|credential)", "touches credentials"),
+    (r"charge\s+(the\s+|a\s+)?(card|customer|user|guest)", "takes a payment"),
+    (r"go\s+live", "goes live"),
+    (r"email\s+(the\s+|our\s+)?(customers?|users?|guests?|hosts?)", "contacts people"),
+)
+
+# What makes a sentence forward-looking. The verb must follow one of these
+# closely, or open a line as a bare imperative ("Deploy the build").
+_INTENT = (
+    r"(?:i'?ll|i am going to|i'?m going to|i will|we'?ll|next(?:\s+up)?|then|"
+    r"let me|need(?:s)? to|should|must|have to|going to|about to|plan to|"
+    r"remaining|still to|to ?do|next steps?)"
+)
+# Only these may sit between the intention and the verb. Anything else -- most
+# importantly ANOTHER VERB -- means the production word is the object of some
+# other action, not the action itself: "let me CHECK the deploy implications"
+# is investigation, and the single-window version refused it.
+_FILLER = r"(?:\s|[:,\-]|\b(?:the|a|an|it|this|that|then|now|also|just|first|finally|actually|properly)\b)*"
+
+
+def _production_hit(text: str) -> tuple[str, str] | None:
+    """The phrase that makes this a production action, or None.
+
+    `text` is expected lowercase.
+    """
+    for pattern, why in _PRODUCTION_COMMANDS:
+        found = re.search(pattern, text)
+        if found:
+            return found.group(0), why
+
+    for verb, why in _PRODUCTION_VERBS:
+        for found in re.finditer(rf"\b{verb}\b", text):
+            start = found.start()
+            # Immediately preceded by an intention, with nothing but filler in
+            # between.
+            before = text[max(0, start - 90):start]
+            if re.search(_INTENT + _FILLER + r"$", before):
+                return found.group(0), why
+            # ...or opening a line, which is how an imperative instruction and
+            # a bullet-pointed next step both look.
+            line_start = text.rfind("\n", 0, start) + 1
+            if re.fullmatch(r"[-*\d.)\s]*", text[line_start:start]):
+                return found.group(0), why
+    return None
+
+
+# Kept as a name because tests and `keepgoing` read it: the flat list is the
+# tier-1 commands, which are the ones safe to match anywhere.
+_PRODUCTION_PATTERNS = _PRODUCTION_COMMANDS
 
 
 # Verbs that name work to be done. A recommendation is an instruction or it is
@@ -282,10 +343,9 @@ def screen(recommendation: str) -> Verdict:
     # Production first, so a refusal names the real reason: "deploys" is more
     # use in the morning than "names no action".
     lowered = text.lower()
-    for pattern, why in _PRODUCTION_PATTERNS:
-        found = re.search(pattern, lowered)
-        if found:
-            return Verdict(False, f"the recommendation {why}", matched=found.group(0))
+    hit = _production_hit(lowered)
+    if hit:
+        return Verdict(False, f"the recommendation {hit[1]}", matched=hit[0])
 
     if not names_an_action(text):
         return Verdict(False, "the recommendation names no action to carry out")

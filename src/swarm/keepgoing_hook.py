@@ -49,6 +49,14 @@ def main() -> None:
         elif session_id:
             text = nightshift_last(session_id)
 
+        # Resolve the PREVIOUS block before deciding anything new: did the
+        # session that was blocked last time actually write anything?
+        outcome = keepgoing.resolve_block(session_id, transcript)
+        if outcome is not None:
+            worked, grew = outcome
+            _record({"event": "keepgoing-outcome", "session": session_id,
+                     "worked": worked, "bytes": grew})
+
         decision = keepgoing.decide(
             text, continues_so_far=keepgoing.continues_for(session_id))
 
@@ -58,6 +66,7 @@ def main() -> None:
             sys.exit(0)
 
         keepgoing.note_continue(session_id)
+        keepgoing.note_block(session_id, transcript)
         _log(session_id, cwd, True, decision.reason)
         # stderr IS the instruction on exit 2.
         sys.stderr.write(decision.instruction)
@@ -88,6 +97,15 @@ def nightshift_last(session_id: str) -> str:
     from swarm import nightshift  # noqa: PLC0415
 
     return nightshift.last_assistant_text(session_id)
+
+
+def _record(entry: dict) -> None:
+    try:
+        from swarm import nightshift  # noqa: PLC0415
+
+        nightshift.record(entry)
+    except Exception:
+        pass
 
 
 def _log(session_id: str, cwd: str, kept_going: bool, reason: str) -> None:

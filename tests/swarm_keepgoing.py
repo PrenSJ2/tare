@@ -74,6 +74,45 @@ def test_an_empty_message_hands_back():
 
 # --- the production gate ----------------------------------------------------
 
+@pytest.mark.parametrize("ending", [
+    # All real, from one 1,383-message session. The single-tier gate refused
+    # 61 messages there; these are the shapes that made it wrong.
+    "The first AsyncValueView migration is in, rather than restructure everything.",
+    "The publish-gate agent found the defect is different from what I recorded.",
+    "Let me check the deploy implications before merging.",
+    "Let me look at what the iOS release actually involves here.",
+    "All merged and deployed. Zero funds moved.",
+    "plutus auto-deploys on merge, so the escrow release has been live for 9 days.",
+])
+def test_describing_production_work_is_not_doing_it(ending):
+    """A keyword gate over prose refuses far more than it should.
+
+    `migration` in a Dart refactor, `publish` in an agent's NAME, `deploy` as
+    the object of "check". The word is not the signal — whether the session is
+    about to DO the thing is.
+    """
+    assert kg.decide(ending + " Let me finish the remaining tests.").keep_going, ending
+
+
+@pytest.mark.parametrize("ending", [
+    "Let me finish the tests. Then deploy the build.",
+    "Next steps: publish the package.",
+    "Remaining work: I'll deploy it once CI is green.",
+    "Still to do: migrate the production database.",
+])
+def test_intending_production_work_still_hands_back(ending):
+    decision = kg.decide(ending)
+    assert not decision.keep_going, ending
+    assert "remaining work" in decision.reason
+
+
+def test_a_literal_command_blocks_in_any_tense():
+    """Tier one is not prose and never appears by accident."""
+    for text in ("Remaining: rm -rf the build dir",
+                 "Still to do: terraform apply the new bucket",
+                 "Next up: kubectl delete the stale pods"):
+        assert not kg.decide(text).keep_going, text
+
 def test_remaining_work_touching_production_hands_back():
     ending = "Tests pass. Next steps: deploy the new build to production."
     decision = kg.decide(ending)
@@ -81,17 +120,20 @@ def test_remaining_work_touching_production_hands_back():
     assert "remaining work" in decision.reason
 
 
-def test_the_gate_errs_toward_refusing():
-    """"Migration path for the remaining screens" is a UI refactor.
+def test_the_gate_still_errs_toward_refusing_where_it_cannot_tell():
+    """"Migrate one screen" is a UI refactor; the gate hands back anyway.
 
-    The gate reads "migration" and hands back anyway, because it cannot tell a
-    screen migration from a database one. That is the trade taken deliberately
-    everywhere this gate is used: a needless hand-back costs one "keep going",
-    a wrong pass costs whatever it touched.
+    It cannot tell a screen migration from a database one, and that trade is
+    taken deliberately: a needless hand-back costs one "keep going", a wrong
+    pass costs whatever it touched.
+
+    What changed is the scope of the doubt. "Next I look at the migration
+    path" is now allowed, because looking at something is not doing it — the
+    production word has to be what the session intends to DO, not the object
+    of some other verb.
     """
-    decision = kg.decide("Next I look at the migration path for the remaining screens.")
-    assert not decision.keep_going
-    assert "runs a migration" in decision.reason
+    assert not kg.decide("Still to do: let me migrate the users table.").keep_going
+    assert kg.decide("Next I look at the migration path for the remaining screens.").keep_going
 
 
 def test_a_summary_mentioning_a_deploy_still_carries_on():

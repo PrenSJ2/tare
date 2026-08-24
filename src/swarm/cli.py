@@ -180,6 +180,17 @@ def _cmd_keepgoing(args) -> int:
 
     recent = [e for e in ns.read_ledger() if e.get("event") == "keepgoing"][-12:]
     if recent:
+        eff = kg.effectiveness()
+        if eff["resolved"]:
+            print(f"\nblocked stops that actually restarted the session: "
+                  f"{eff['worked']}/{eff['resolved']} ({eff['rate']}%)")
+            if eff["rate"] < 80:
+                print("  a low rate means the hook is deciding correctly and Claude Code")
+                print("  is not acting on it — a different problem from the gate refusing")
+                print("  too much, and the reason this is measured rather than assumed")
+        else:
+            print("\nno blocked stop resolved yet — the rate appears after the next one")
+
         print("\nrecent decisions:")
         for entry in recent:
             mark = "->" if entry.get("kept_going") else "--"

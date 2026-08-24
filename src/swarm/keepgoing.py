@@ -165,10 +165,9 @@ def decide(final_message: str, *, continues_so_far: int = 0) -> Decision:
     # granularity; the equivalent here is the tail from the point the message
     # starts describing what is left.
     ahead = lowered[outstanding.start():][:REMAINING_WORK_WINDOW]
-    for pattern, why in nightshift._PRODUCTION_PATTERNS:
-        found = re.search(pattern, ahead)
-        if found:
-            return Decision(False, f"the remaining work {why}")
+    hit = nightshift._production_hit(ahead)
+    if hit:
+        return Decision(False, f"the remaining work {hit[1]}")
 
     return Decision(True, f"outstanding work ({outstanding.group(0)!r})",
                     instruction=CONTINUE_INSTRUCTION)
@@ -229,6 +228,48 @@ def is_armed(cwd: Path) -> bool:
 # Consecutive-continue counter, per session
 # ---------------------------------------------------------------------------
 
+def note_block(session_id: str, transcript: str | None) -> None:
+    """Remember the transcript's size at the moment a stop was blocked.
+
+    The next fire compares against it. Without this the ledger records what the
+    hook DECIDED and never what happened — and it reported twenty successful
+    continuations on a session where only eight actually resumed. That is the
+    same failure as `nightshift` counting exit 0 as work done, one project
+    over, and it hid a 40% success rate for four days.
+    """
+    size = None
+    if transcript:
+        try:
+            size = Path(transcript).stat().st_size
+        except OSError:
+            size = None
+    state = _read_state()
+    state.setdefault("pending", {})[session_id] = {"at": time.time(), "size": size}
+    _write_state(state)
+
+
+def resolve_block(session_id: str, transcript: str | None) -> tuple[bool, int] | None:
+    """Did the previous block actually restart the session?
+
+    Returns (worked, bytes_written), or None when there was no pending block.
+    A blocked stop that produced no new transcript bytes did not continue
+    anything, whatever its exit code said.
+    """
+    state = _read_state()
+    pending = state.get("pending", {}).pop(session_id, None)
+    if not pending:
+        return None
+    _write_state(state)
+    before = pending.get("size")
+    if before is None or not transcript:
+        return None
+    try:
+        after = Path(transcript).stat().st_size
+    except OSError:
+        return None
+    return after > before, after - before
+
+
 def continues_for(session_id: str) -> int:
     return int(_read_state().get("sessions", {}).get(session_id, 0))
 
@@ -251,3 +292,19 @@ def reset_continues(session_id: str) -> None:
     state = _read_state()
     if state.get("sessions", {}).pop(session_id, None) is not None:
         _write_state(state)
+
+
+def effectiveness() -> dict:
+    """How often a blocked stop actually restarted the session.
+
+    Reads outcomes, not decisions. If this sits far below 100%, the hook is
+    deciding correctly and Claude Code is not acting on it — a different
+    problem from the gate refusing too much, and one that has to be
+    distinguishable at a glance rather than inferred four days later.
+    """
+    from . import nightshift  # noqa: PLC0415 - shared ledger
+
+    rows = [r for r in nightshift.read_ledger() if r.get("event") == "keepgoing-outcome"]
+    worked = sum(1 for r in rows if r.get("worked"))
+    return {"resolved": len(rows), "worked": worked,
+            "rate": round(100 * worked / len(rows)) if rows else None}
