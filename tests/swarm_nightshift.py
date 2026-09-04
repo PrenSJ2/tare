@@ -1024,3 +1024,46 @@ def test_the_dispatch_command_carries_the_whole_wide_denylist(tmp_path):
     assert disallowed == ",".join(ns.WIDE_DENIED_TOOLS)
     for entry in ns.WIDE_DENIED_TOOLS:
         assert entry in disallowed.split(",")
+
+
+# --- the headless contract --------------------------------------------------
+
+def test_a_complete_outcome_is_read_from_the_contract():
+    out = ns.parse_outcome('blah blah\n{"status": "complete", "files": ["a.py", "b.py"]}\n')
+    assert out.status == "complete"
+    assert out.files == ["a.py", "b.py"]
+
+
+def test_a_blocked_outcome_carries_its_code_and_reason():
+    out = ns.parse_outcome('{"status": "blocked", "error_code": "insufficient_intent", '
+                           '"reason": "too thin to distill"}')
+    assert out.status == "blocked"
+    assert out.error_code == "insufficient_intent"
+    assert "too thin" in out.reason
+
+
+def test_the_last_contract_object_wins_over_an_earlier_one():
+    """The model may print an example of the contract before returning one."""
+    out = ns.parse_outcome('{"status": "blocked", "error_code": "x", "reason": "y"}\n'
+                           'actually, on reflection:\n'
+                           '{"status": "complete", "files": ["z.py"]}')
+    assert out.status == "complete"
+
+
+def test_narration_instead_of_a_contract_is_blocked_not_success():
+    """This WILL happen. Inferring success from a zero exit code is precisely
+    the inference the whole design exists to delete."""
+    out = ns.parse_outcome("I've finished the story and everything passes!")
+    assert out.status == "blocked"
+    assert out.error_code == "no_contract"
+    assert "everything passes" in out.raw_tail
+
+
+def test_an_unrelated_json_object_is_not_mistaken_for_the_contract():
+    out = ns.parse_outcome('{"files": ["a.py"], "note": "not the contract"}')
+    assert out.status == "blocked"
+    assert out.error_code == "no_contract"
+
+
+def test_empty_output_is_blocked():
+    assert ns.parse_outcome("").error_code == "no_contract"

@@ -385,6 +385,57 @@ class Step:
     output_tail: str = ""
 
 
+# The headless contract, from BMAD's `headless-schemas.md`:
+#   {"status": "complete", "files": [...]}
+#   {"status": "blocked", "error_code": "...", "reason": "..."}
+#
+# Nothing else is a result. In particular an exit code is not: a blocked
+# continuation exits 0, and reading that as success is the failure this whole
+# feature was built to remove.
+_CONTRACT = re.compile(r"\{[^{}]*\"status\"\s*:\s*\"(?:complete|blocked)\"[^{}]*\}", re.S)
+
+
+@dataclass
+class Outcome:
+    status: str
+    files: list[str] = field(default_factory=list)
+    error_code: str = ""
+    reason: str = ""
+    raw_tail: str = ""
+
+
+def parse_outcome(text: str) -> Outcome:
+    """Read the contract out of a dispatch's output.
+
+    The LAST matching object wins: a run may print an example of the contract
+    while explaining itself and then return the real one.
+
+    Output with no contract in it is `blocked` with `no_contract`, never a
+    guess. The tail is kept because that text is the only evidence of what the
+    run thought it was doing, and it is what somebody reads at 8am.
+    """
+    tail = (text or "")[-1200:]
+    for candidate in reversed(list(_CONTRACT.finditer(text or ""))):
+        try:
+            parsed = json.loads(candidate.group(0))
+        except json.JSONDecodeError:
+            continue
+        status = parsed.get("status")
+        if status == "complete":
+            files = parsed.get("files")
+            return Outcome(status="complete",
+                           files=[str(f) for f in files] if isinstance(files, list) else [],
+                           raw_tail=tail)
+        if status == "blocked":
+            return Outcome(status="blocked",
+                           error_code=str(parsed.get("error_code") or "unspecified"),
+                           reason=str(parsed.get("reason") or ""),
+                           raw_tail=tail)
+    return Outcome(status="blocked", error_code="no_contract",
+                   reason="the run returned no headless JSON contract",
+                   raw_tail=tail)
+
+
 # ---------------------------------------------------------------------------
 # The gate
 # ---------------------------------------------------------------------------
