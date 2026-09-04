@@ -1,0 +1,200 @@
+"""The boundary, which is a git worktree and one hook.
+
+The tool policy this loop runs under is wide by choice, and `nightshift`'s own
+docstring calls the narrow allowlist "the only real control". Widening it
+without putting something in its place would leave no control at all, so this
+module is that replacement.
+
+## What it buys, and what it does not
+
+A worktree buys **reviewability, not confinement**. Nothing merges; every
+night's work is a branch and a diff read in the morning. Under the widened
+policy, filesystem writes outside the repository and network egress are
+unconstrained, and this module does not pretend otherwise.
+
+## Why the restriction is a hook and not an --allowedTools pattern
+
+`--allowedTools` matches command prefixes. `Bash(git push:*)` is all-or-
+nothing and `Bash(git push origin nightshift/:*)` walks straight through on
+`git push origin HEAD:main`, which has the same prefix up to the point where
+it stops mattering. A refspec restriction cannot be written as a prefix, so it
+is enforced where refspecs actually exist: a `pre-push` hook that reads the
+remote ref off stdin and exits non-zero for anything outside
+`refs/heads/nightshift/`. Deterministic, inspectable, fails closed.
+
+## The trap this module exists to avoid
+
+A worktree does NOT get its own hooks directory. `.git/hooks` lives in the
+common directory and is shared with the main working tree, so writing a
+`pre-push` there would silently install it into the operator's real
+repository -- a tool meant to restrict an unattended run instead breaking the
+human's own pushes.
+
+The fix is `git config --worktree core.hooksPath`, which needs
+`extensions.worktreeConfig=true` set on the repository first. That extension is
+set here, deliberately and once: it is a repository-level change, it is the
+only one this module makes, and it is inert for anyone not using worktrees.
+"""
+
+from __future__ import annotations
+
+import re
+import shutil
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+BRANCH_NAMESPACE = "nightshift"
+ALLOWED_REF_PREFIX = f"refs/heads/{BRANCH_NAMESPACE}/"
+
+# Where the per-worktree hooks live, relative to the worktree root.
+HOOKS_DIRNAME = ".nightshift-hooks"
+
+# The hook. `pre-push` receives one line per ref on stdin:
+#   <local ref> <local sha> <remote ref> <remote sha>
+# The remote ref is the one that matters -- it is what the push will actually
+# write, and it is the field `git push origin HEAD:main` sets to
+# `refs/heads/main` no matter what the local branch is called.
+PRE_PUSH_HOOK = f"""#!/bin/sh
+# Installed by swarm.worktree. Do not edit; it is rewritten on every create.
+#
+# Refuses any push outside {ALLOWED_REF_PREFIX}. This is the boundary that
+# replaces the narrow tool allowlist, so it fails closed: an unreadable line
+# is a refusal, not a pass.
+while read -r local_ref local_sha remote_ref remote_sha
+do
+    case "$remote_ref" in
+        {ALLOWED_REF_PREFIX}?*)
+            ;;
+        *)
+            echo "swarm: refusing to push '$remote_ref'." >&2
+            echo "swarm: unattended runs may only push {ALLOWED_REF_PREFIX}*" >&2
+            exit 1
+            ;;
+    esac
+done
+exit 0
+"""
+
+_UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
+
+
+@dataclass(frozen=True)
+class Worktree:
+    path: Path
+    branch: str
+    repo: Path
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(repo), *args],
+                          capture_output=True, text=True)
+
+
+def branch_for(slug: str, story_id: str) -> str:
+    """`nightshift/<slug>/<id>`.
+
+    Both components are sanitised: a slug is a directory name and an id comes
+    from a YAML file, and neither is trusted to be a safe ref component. A
+    branch called `nightshift/../../main` would defeat the whole hook.
+    """
+    safe_slug = _UNSAFE.sub("-", slug) or "unknown"
+    safe_id = _UNSAFE.sub("-", story_id) or "unknown"
+    return f"{BRANCH_NAMESPACE}/{safe_slug}/{safe_id}"
+
+
+def worktrees_root(repo: Path) -> Path:
+    """Sibling of the repo, not inside it: a worktree inside its own
+    repository shows up in `git status` and in every glob the run makes."""
+    return repo.parent / f".{repo.name}-nightshift"
+
+
+def install_hook(worktree_path: Path) -> Path:
+    """Write the pre-push hook and point THIS worktree at it.
+
+    `--worktree` is the whole point: without it, `core.hooksPath` is a
+    repository-wide setting and this would redirect the operator's own hooks.
+    """
+    hooks = worktree_path / HOOKS_DIRNAME
+    hooks.mkdir(parents=True, exist_ok=True)
+    hook = hooks / "pre-push"
+    hook.write_text(PRE_PUSH_HOOK, encoding="utf-8")
+    hook.chmod(0o755)
+
+    # Repository-level, and required before `config --worktree` does anything.
+    _git(worktree_path, "config", "extensions.worktreeConfig", "true")
+    result = _git(worktree_path, "config", "--worktree", "core.hooksPath", str(hooks))
+    if result.returncode != 0:
+        raise RuntimeError(
+            "could not scope core.hooksPath to the worktree "
+            f"({result.stderr.strip()}); refusing to continue, because the "
+            "fallback would install a pre-push hook into the operator's own "
+            "repository")
+    return hook
+
+
+def create(repo: Path, *, slug: str, story_id: str, base: str = "HEAD") -> Worktree:
+    """A worktree on `nightshift/<slug>/<id>`, with the boundary installed."""
+    branch = branch_for(slug, story_id)
+    path = worktrees_root(repo) / branch.replace("/", "__")
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    if path.exists():
+        raise FileExistsError(
+            f"{path} already exists -- a previous shift did not dispose of it. "
+            "Run `swarm doctor` to see orphaned worktrees; nothing here will "
+            "reuse a tree it did not create.")
+
+    existing = _git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
+    args = ["worktree", "add", str(path)]
+    args += [branch] if existing.returncode == 0 else ["-b", branch, base]
+
+    result = _git(repo, *args)
+    if result.returncode != 0:
+        raise RuntimeError(f"git worktree add failed: {result.stderr.strip()}")
+
+    install_hook(path)
+    return Worktree(path=path, branch=branch, repo=repo)
+
+
+def dispose(tree: Worktree, *, force: bool = False) -> str:
+    """Remove the worktree. Never discards uncommitted work silently.
+
+    A tree holding uncommitted changes is left in place and reported. The work
+    an unattended run did is the only record of what it was trying to do, and
+    `--force` here would delete exactly the evidence someone gets up to read.
+
+    The dirty check excludes `HOOKS_DIRNAME`: that directory is this module's
+    own bookkeeping (the pre-push hook), always untracked, and present in
+    every worktree it creates. Counting it would make every worktree look
+    dirty and `dispose` would never actually remove one.
+    """
+    dirty = _git(tree.path, "status", "--porcelain", "--",
+                 ".", f":!{HOOKS_DIRNAME}").stdout.strip()
+    if dirty and not force:
+        return f"left in place: {tree.path} has uncommitted changes"
+    # `--force` unconditionally: `git worktree remove`'s own dirty check does
+    # not know to exclude HOOKS_DIRNAME, so it would refuse a tree this
+    # module has already judged clean above. The real decision was made by
+    # the check above; this only bypasses git re-litigating it against our
+    # own bookkeeping directory.
+    result = _git(tree.repo, "worktree", "remove", "--force", str(tree.path))
+    if result.returncode != 0:
+        return f"could not remove {tree.path}: {result.stderr.strip()}"
+    return f"removed {tree.path}"
+
+
+def orphans(repo: Path) -> list[tuple[Path, str]]:
+    """Worktrees this module created that a shift never cleaned up."""
+    listed = _git(repo, "worktree", "list", "--porcelain").stdout
+    out: list[tuple[Path, str]] = []
+    current: Path | None = None
+    for line in listed.splitlines():
+        if line.startswith("worktree "):
+            current = Path(line[len("worktree "):])
+        elif line.startswith("branch ") and current is not None:
+            ref = line[len("branch "):].strip()
+            if ref.startswith(ALLOWED_REF_PREFIX):
+                out.append((current, ref))
+            current = None
+    return out
