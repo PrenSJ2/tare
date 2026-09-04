@@ -1218,22 +1218,85 @@ def _fake_claude(tmp_path):
     return bin_dir
 
 
+def _fake_claude_per_story(tmp_path, *, outcomes, verified=None):
+    """Like `_fake_claude`, but the answer depends on the STORY id rather
+    than one shift-wide env var.
+
+    Needed to test that `consecutive_failures` actually RESETS on a success
+    in the middle of a run of failures: an all-blocked scenario cannot tell a
+    counter that resets from one that doesn't, because neither ever
+    exercises the reset. `outcomes` maps story id -> "complete"/"blocked";
+    `verified` maps story id -> bool, consulted only when the verify prompt
+    is the one being answered. Both prompts (`build_story_command` and
+    `verify.build_verify_command`) embed "Story id: <id>", which is what is
+    parsed back out here.
+    """
+    verified = verified or {}
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    script = bin_dir / "claude"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import re, sys\n"
+        f"OUTCOMES = {outcomes!r}\n"
+        f"VERIFIED = {verified!r}\n"
+        "text = ' '.join(sys.argv[1:])\n"
+        "m = re.search(r'Story id: (\\S+)', text)\n"
+        "story_id = m.group(1) if m else None\n"
+        "if 'acceptance criteria hold' in text:\n"
+        "    ok = VERIFIED.get(story_id, True)\n"
+        "    print('{\"verified\": %s, \"reason\": \"stub verify\", \"unmet\": []}'\n"
+        "          % ('true' if ok else 'false'))\n"
+        "else:\n"
+        "    outcome = OUTCOMES.get(story_id, 'complete')\n"
+        "    if outcome == 'blocked':\n"
+        "        print('{\"status\": \"blocked\", \"error_code\": \"stub_blocked\", "
+        "\"reason\": \"stub blocked\"}')\n"
+        "    else:\n"
+        "        print('{\"status\": \"complete\", \"files\": [\"x.py\"]}')\n"
+    )
+    script.chmod(0o755)
+    return bin_dir
+
+
 def _fake_gh(tmp_path, *, ok=True):
     """A stub `gh` on PATH. `ok=True` prints a PR URL; `ok=False` fails like
-    an unauthenticated `gh` would."""
+    an unauthenticated `gh` would.
+
+    Every invocation appends its argv to `gh-calls.log` under `tmp_path`, so
+    a test can observe "gh was never invoked" directly rather than inferring
+    it from a ledger entry that carries no `pr` key either way -- which is
+    exactly the assertion `open_pr` being called unconditionally would slip
+    past.
+    """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     script = bin_dir / "gh"
+    calls_file = tmp_path / "gh-calls.log"
+    body = (
+        "#!/usr/bin/env python3\n"
+        # `json.dumps`, not a plain join: `--body` carries embedded newlines
+        # (the PR body is multi-paragraph), and a naive `join(...) + "\n"`
+        # would split ONE invocation across several lines, miscounting calls.
+        "import json, sys\n"
+        f"with open({str(calls_file)!r}, 'a') as f:\n"
+        "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+    )
     if ok:
-        script.write_text("#!/usr/bin/env python3\nprint('https://example.invalid/pull/1')\n")
+        body += "print('https://example.invalid/pull/1')\n"
     else:
-        script.write_text(
-            "#!/usr/bin/env python3\n"
-            "import sys\n"
-            "sys.stderr.write('gh: authentication required\\n')\n"
-            "sys.exit(1)\n")
+        body += ("sys.stderr.write('gh: authentication required\\n')\n"
+                  "sys.exit(1)\n")
+    script.write_text(body)
     script.chmod(0o755)
     return bin_dir
+
+
+def _gh_calls(tmp_path) -> list[str]:
+    calls_file = tmp_path / "gh-calls.log"
+    if not calls_file.is_file():
+        return []
+    return [line for line in calls_file.read_text().splitlines() if line.strip()]
 
 
 def _with_origin(repo):
@@ -1270,6 +1333,7 @@ def test_apply_true_verified_pushes_and_opens_a_pr(swarm_home, tmp_path, monkeyp
     assert verified[0]["pushed"] is True
     assert verified[0]["pr"] == "https://example.invalid/pull/1"
     assert wt.orphans(repo) == [], "the worktree must be disposed after a verified story"
+    assert len(_gh_calls(tmp_path)) == 1, "a PR must be opened for a verified, pushed story"
 
 
 def test_apply_true_unverified_pushes_but_opens_no_pr_and_stays_queued(
@@ -1294,6 +1358,11 @@ def test_apply_true_unverified_pushes_but_opens_no_pr_and_stays_queued(
     assert parked[0]["pushed"] is True, "the branch is still pushed so the work is reviewable"
     assert "not verified" in parked[0]["reason"]
     assert "pr" not in parked[0]
+    # The one thing this test's name promises, checked directly against the
+    # stub rather than inferred from a ledger dict that carries no "pr" key
+    # either way: `open_pr` called unconditionally would leave every
+    # assertion above passing.
+    assert _gh_calls(tmp_path) == [], "gh must never be invoked for an unverified story"
 
     # Still open tomorrow: nothing marked it complete.
     dry = ns.run_story_shift(repo, apply=False)
@@ -1339,3 +1408,43 @@ def test_the_consecutive_failure_backstop_stops_at_exactly_three(
 
     assert len(shift.steps) == 3
     assert "3 dispatches in a row" in shift.ended
+
+
+FIVE_STORIES = (
+    '- id: "1"\n  title: Add a limiter\n  description: Return 429 on breach.\n'
+    '- id: "2"\n  title: Add a cache\n  description: Cache the response.\n'
+    '- id: "3"\n  title: Add a metric\n  description: Emit a counter.\n'
+    '- id: "4"\n  title: Add a header\n  description: Set a response header.\n'
+    '- id: "5"\n  title: Add a log line\n  description: Log the request.\n'
+)
+
+
+def test_a_success_in_the_middle_resets_the_consecutive_failure_count(
+        swarm_home, tmp_path, monkeypatch):
+    """Two failures, a verified success, then two more failures must NOT trip
+    the backstop -- it counts CONSECUTIVE failures, and a plan with failures
+    scattered around a real success must not end the night early for no
+    reason.
+
+    The all-blocked scenario above cannot tell a counter that resets from one
+    that doesn't: neither scenario ever exercises the reset, since a success
+    never occurs. This one does, with `_fake_claude_per_story` answering
+    story 3 with a verified completion between two pairs of blocked stories.
+    """
+    repo = _bmad_repo(tmp_path, FIVE_STORIES)
+    _with_origin(repo)
+    bin_dir = _fake_claude_per_story(
+        tmp_path,
+        outcomes={"1": "blocked", "2": "blocked", "3": "complete",
+                  "4": "blocked", "5": "blocked"},
+        verified={"3": True})
+    _fake_gh(tmp_path, ok=True)
+    _on_path(monkeypatch, bin_dir)
+
+    shift = ns.run_story_shift(repo, apply=True)
+
+    assert "dispatches in a row" not in shift.ended, (
+        "the backstop tripped even though a verified success sat between "
+        "the two runs of failures -- the counter did not reset")
+    assert shift.ended == "no story left to run"
+    assert len(shift.steps) == 5, "all five stories should have been attempted"
