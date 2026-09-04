@@ -1189,6 +1189,22 @@ def test_the_wide_policy_permits_what_it_was_widened_for():
         assert capability in joined, f"{capability} missing from the widened policy"
 
 
+def test_the_wide_denylist_does_not_deny_what_the_wide_policy_grants():
+    """WIDE_DENIED_TOOLS must not be derived from DENIED_TOOLS.
+
+    DENIED_TOOLS carries `Bash(git push:*)` and `Bash(gh:*)` -- both of which
+    story mode grants deliberately. Inheriting them would deny the push and the
+    pull request this feature exists to produce, and the failure would surface
+    as a permission prompt at 4am with nobody there to answer it.
+    """
+    denied = " ".join(ns.WIDE_DENIED_TOOLS)
+    assert "Bash(git push:*)" not in ns.WIDE_DENIED_TOOLS
+    assert "Bash(gh:*)" not in ns.WIDE_DENIED_TOOLS
+    assert "WebFetch" not in denied and "WebSearch" not in denied
+    # ...while still denying the things that reach past the boundary.
+    assert "Bash(gh pr merge:*)" in ns.WIDE_DENIED_TOOLS
+
+
 def test_the_story_preamble_does_not_forbid_what_the_policy_now_allows():
     """The old preamble says 'Do NOT push' and 'Stay on the current branch'.
 
@@ -1257,10 +1273,21 @@ WIDE_TOOLS = (
 # Denied even under the wide policy. These are not "dangerous commands" in
 # general -- they are the ones that reach PAST the boundary rather than
 # operating inside it, so no worktree makes them safe.
-WIDE_DENIED_TOOLS = DENIED_TOOLS + (
+#
+# Written out in full rather than as `DENIED_TOOLS + (...)`. That derivation
+# looks tidier and is wrong: DENIED_TOOLS carries `Bash(git push:*)`,
+# `Bash(gh:*)`, `WebFetch` and `WebSearch`, every one of which this mode
+# grants on purpose. Inheriting it would deny the push and the pull request
+# the whole feature exists to produce, and the failure would look like a
+# permissions prompt at 4am with nobody there to answer it.
+WIDE_DENIED_TOOLS = (
     "Bash(gh pr merge:*)", "Bash(gh release:*)", "Bash(gh repo delete:*)",
     "Bash(git push --force:*)", "Bash(git push -f:*)",
+    "Bash(git merge:*)", "Bash(git reset --hard:*)", "Bash(git clean:*)",
     "Bash(git worktree remove:*)",
+    "Bash(npm publish:*)", "Bash(pnpm publish:*)",
+    "Bash(terraform:*)", "Bash(kubectl:*)", "Bash(docker push:*)",
+    "Bash(rm -rf:*)",
 )
 ```
 
