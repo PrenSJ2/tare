@@ -2207,7 +2207,12 @@ Run: `python -m pytest tests/test_*.py tests/swarm_*.py -v`
 
 Both globs are required. This repo has **no `[tool.pytest.ini_options]`**, so pytest's default `python_files` is `test_*.py *_test.py` — a bare `pytest` or `pytest tests/` collects 403 tests and **zero** from any `swarm_*.py` file. Every gate in this plan that said "run the full suite" would otherwise have skipped the entire half of the codebase this feature lives in.
 
-Expected: the new tests pass, and `tests/swarm_project.py` shows **9 pre-existing `FileNotFoundError` failures** unrelated to this work (that file is untouched by this plan). Treat any *other* failure as yours.
+Expected: the new tests pass, alongside **9 pre-existing failures**, none of them caused by this plan and neither file touched by it:
+
+- **6 in `tests/swarm_project.py`** — all `FileNotFoundError`.
+- **3 in `tests/swarm_nightshift.py`** — `test_the_gate_refuses_anything_touching_production` for "Run the database migration for the new column", "Rotate the API key that leaked", and "Update the .env with the live key". These are real holes in `screen()`, verified red on `c2e7a2e`, and **Task 11 closes them**.
+
+Treat any *other* failure as yours.
 
 - [ ] **Step 8: Commit**
 
