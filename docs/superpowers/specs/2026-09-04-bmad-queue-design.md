@@ -168,6 +168,39 @@ claim it makes is now different and narrower:
 > filesystem writes outside the repository and network egress are
 > unconstrained.
 
+**Correction, added after Task 3 was reviewed and measured.** The claim above
+is true but was not the whole truth, and the shortfall is in the direction
+that matters.
+
+An adversarial review built real push attempts against a real bare remote.
+The hook blocked every refspec vector tried: explicit `HEAD:refs/heads/main`,
+short-form `HEAD:main`, lookalikes (`nightshift-evil/x`, `anightshift/x`, bare
+`nightshift`), tags and `--tags`, notes, `--all`, `--mirror`, force-push,
+deletion pushes in both spellings, a mixed refspec with one good and one bad
+ref in either order, and pushing to the remote's filesystem path directly. The
+operator's own repository was confirmed untouched.
+
+But the hook lives at `<worktree>/.nightshift-hooks/pre-push` — **inside the
+tree the agent has write access to.** Four one-command escapes were verified,
+each of which pushed to `refs/heads/main`: `git push --no-verify`;
+`git -c core.hooksPath= push`; the `GIT_CONFIG_COUNT` environment equivalent;
+and simply `rm .nightshift-hooks/pre-push`.
+
+So the honest statement is narrower than "the boundary that replaces the tool
+allowlist":
+
+> It is a **guardrail against an agent that is not trying to evade it.** It
+> converts a plausible accident — `git push origin HEAD:main`, a stray
+> `--tags`, a `--mirror` — into a hard refusal. Against a process that sets
+> out to bypass it, it is worth about one extra line of prompt.
+
+That is still worth having, because the realistic failure mode of a `claude -p`
+story implementation is the accident, not the attack. But it is a weaker
+property than the narrow tool allowlist it replaced, and anyone deciding
+whether to run this unattended should decide against the real claim rather
+than the flattering one. A boundary that actually confines needs the container
+option, which this spec puts out of scope.
+
 `CONTINUATION_PREAMBLE` also needs rewriting: it currently says "Do NOT push"
 and "Stay on the current branch", both of which are false in this mode.
 
