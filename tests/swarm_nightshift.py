@@ -1159,3 +1159,183 @@ def test_a_shift_refuses_to_start_on_a_default_branch(swarm_home, tmp_path):
     subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", "main"], check=True)
     shift = ns.run_story_shift(repo, apply=False)
     assert "main" in shift.ended or "branch" in shift.ended
+
+
+# --- story mode: the exclude regression --------------------------------------
+
+def test_a_parked_story_is_excluded_from_the_next_pick_this_shift(swarm_home, tmp_path):
+    """`queue.next_story` must be called with `exclude=parked_this_shift`, not
+    left to the ledger's own park counter alone. Without it, a parked story is
+    re-picked from the ledger's count (up to `max_parks`) before the queue
+    moves on -- in `--apply` mode that is real re-dispatches, not just wasted
+    dry-run passes, and it is a regression the existing park-continues test
+    would not have noticed (the ledger counter rescues it after three
+    re-picks, still inside the step budget).
+    """
+    repo = _bmad_repo(
+        tmp_path,
+        '- id: "1"\n  title: Ship it\n  description: Deploy the limiter to production.\n'
+        '- id: "2"\n  title: Add a test\n  description: Cover the limiter.\n')
+    shift = ns.run_story_shift(repo, apply=False)
+    assert len(shift.steps) == 2, (
+        "expected exactly two passes: park story 1, then reach story 2 -- "
+        "more means story 1 was re-picked before `exclude` moved the queue on")
+    assert shift.steps[0].story_key == "spec-alpha/1"
+    assert shift.steps[1].story_key == "spec-alpha/2"
+
+
+# --- story mode: apply=True, against stub `claude` and `gh` -----------------
+
+def _fake_claude(tmp_path):
+    """A stub `claude` on PATH, so `apply=True` can be exercised without a
+    real model call. Same philosophy as `_bmad_repo`'s real git: a mock
+    cannot tell you the truth about a real subprocess invocation.
+
+    Routed by PROMPT CONTENT, not argument position -- dispatch and
+    verification both invoke `claude -p <prompt>`, only the prompt differs.
+    `TARE_TEST_OUTCOME` ("complete"/"blocked") answers the headless contract
+    `dispatch_story` reads; `TARE_TEST_VERIFIED` ("true"/"false") answers
+    `verify.check`'s prompt.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    script = bin_dir / "claude"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys\n"
+        "text = ' '.join(sys.argv[1:])\n"
+        "if 'acceptance criteria hold' in text:\n"
+        "    verified = os.environ.get('TARE_TEST_VERIFIED', 'true')\n"
+        "    print('{\"verified\": ' + verified + ', \"reason\": \"stub verify\", \"unmet\": []}')\n"
+        "else:\n"
+        "    outcome = os.environ.get('TARE_TEST_OUTCOME', 'complete')\n"
+        "    if outcome == 'blocked':\n"
+        "        print('{\"status\": \"blocked\", \"error_code\": \"stub_blocked\", \"reason\": \"stub blocked\"}')\n"
+        "    else:\n"
+        "        print('{\"status\": \"complete\", \"files\": [\"x.py\"]}')\n"
+    )
+    script.chmod(0o755)
+    return bin_dir
+
+
+def _fake_gh(tmp_path, *, ok=True):
+    """A stub `gh` on PATH. `ok=True` prints a PR URL; `ok=False` fails like
+    an unauthenticated `gh` would."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    script = bin_dir / "gh"
+    if ok:
+        script.write_text("#!/usr/bin/env python3\nprint('https://example.invalid/pull/1')\n")
+    else:
+        script.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "sys.stderr.write('gh: authentication required\\n')\n"
+            "sys.exit(1)\n")
+    script.chmod(0o755)
+    return bin_dir
+
+
+def _with_origin(repo):
+    """A local bare remote, so `push_branch`'s real `git push` has somewhere
+    to land -- worktree creation is not the only thing a mock cannot tell you
+    the truth about."""
+    import subprocess
+    bare = repo.parent / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(bare)], check=True)
+    return bare
+
+
+def _on_path(monkeypatch, bin_dir):
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+
+def test_apply_true_verified_pushes_and_opens_a_pr(swarm_home, tmp_path, monkeypatch):
+    from swarm import queue
+    repo = _bmad_repo(tmp_path, ONE_STORY)
+    _with_origin(repo)
+    bin_dir = _fake_claude(tmp_path)
+    _fake_gh(tmp_path, ok=True)
+    _on_path(monkeypatch, bin_dir)
+    monkeypatch.setenv("TARE_TEST_OUTCOME", "complete")
+    monkeypatch.setenv("TARE_TEST_VERIFIED", "true")
+
+    ns.run_story_shift(repo, apply=True)
+
+    entries = ns.read_ledger()
+    verified = [e for e in entries if e.get("event") == queue.VERIFIED_EVENT]
+    assert len(verified) == 1
+    assert verified[0]["story_key"] == "spec-alpha/1"
+    assert verified[0]["pushed"] is True
+    assert verified[0]["pr"] == "https://example.invalid/pull/1"
+    assert wt.orphans(repo) == [], "the worktree must be disposed after a verified story"
+
+
+def test_apply_true_unverified_pushes_but_opens_no_pr_and_stays_queued(
+        swarm_home, tmp_path, monkeypatch):
+    from swarm import queue
+    repo = _bmad_repo(tmp_path, ONE_STORY)
+    _with_origin(repo)
+    bin_dir = _fake_claude(tmp_path)
+    _fake_gh(tmp_path, ok=True)  # present but must never be invoked
+    _on_path(monkeypatch, bin_dir)
+    monkeypatch.setenv("TARE_TEST_OUTCOME", "complete")
+    monkeypatch.setenv("TARE_TEST_VERIFIED", "false")
+
+    ns.run_story_shift(repo, apply=True)
+
+    entries = ns.read_ledger()
+    assert not [e for e in entries if e.get("event") == queue.VERIFIED_EVENT], (
+        "a story must not leave the queue on an unverified completion")
+    parked = [e for e in entries if e.get("event") == queue.PARKED_EVENT]
+    assert len(parked) == 1
+    assert parked[0]["story_key"] == "spec-alpha/1"
+    assert parked[0]["pushed"] is True, "the branch is still pushed so the work is reviewable"
+    assert "not verified" in parked[0]["reason"]
+    assert "pr" not in parked[0]
+
+    # Still open tomorrow: nothing marked it complete.
+    dry = ns.run_story_shift(repo, apply=False)
+    assert any("Add a limiter" in s.recommendation for s in dry.steps)
+
+
+def test_done_checkpoint_ends_the_shift_after_disposal(swarm_home, tmp_path, monkeypatch):
+    from swarm import queue
+    story_yaml = ('- id: "1"\n  title: Add a limiter\n  description: Return 429 on breach.\n'
+                  '  done_checkpoint: true\n')
+    repo = _bmad_repo(tmp_path, story_yaml)
+    _with_origin(repo)
+    bin_dir = _fake_claude(tmp_path)
+    _fake_gh(tmp_path, ok=True)
+    _on_path(monkeypatch, bin_dir)
+    monkeypatch.setenv("TARE_TEST_OUTCOME", "complete")
+    monkeypatch.setenv("TARE_TEST_VERIFIED", "true")
+
+    shift = ns.run_story_shift(repo, apply=True)
+
+    assert "done_checkpoint" in shift.ended
+    assert "spec-alpha/1" in shift.ended
+    assert wt.orphans(repo) == [], "the worktree must be disposed before the shift ends"
+    entries = ns.read_ledger()
+    assert any(e.get("event") == queue.VERIFIED_EVENT for e in entries)
+
+
+THREE_STORIES = (
+    '- id: "1"\n  title: Add a limiter\n  description: Return 429 on breach.\n'
+    '- id: "2"\n  title: Add a cache\n  description: Cache the response.\n'
+    '- id: "3"\n  title: Add a metric\n  description: Emit a counter.\n'
+)
+
+
+def test_the_consecutive_failure_backstop_stops_at_exactly_three(
+        swarm_home, tmp_path, monkeypatch):
+    repo = _bmad_repo(tmp_path, THREE_STORIES)
+    bin_dir = _fake_claude(tmp_path)
+    _on_path(monkeypatch, bin_dir)
+    monkeypatch.setenv("TARE_TEST_OUTCOME", "blocked")
+
+    shift = ns.run_story_shift(repo, apply=True)
+
+    assert len(shift.steps) == 3
+    assert "3 dispatches in a row" in shift.ended

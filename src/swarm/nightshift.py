@@ -1234,6 +1234,21 @@ def run_story_shift(
         record({"event": "refused", "reason": shift.ended, "repo": str(repo)})
         return shift
 
+    # One shift at a time, story mode or session mode -- both dispatch into
+    # the same repository, and `run_shift`'s own reasoning still applies:
+    # two shifts interleaving is "the kind of thing nobody discovers until
+    # the morning diff makes no sense". Without this, two story shifts on one
+    # repo both pick story 1 and the second `wt_module.create` raises
+    # `FileExistsError`, which used to surface as an unexplained crash rather
+    # than "someone else is already running".
+    other = running_shift()
+    if other is not None:
+        shift.ended = f"another shift is already running (pid {other})"
+        record({"event": "refused", "reason": shift.ended, "repo": str(repo)})
+        return shift
+    lock_file().parent.mkdir(parents=True, exist_ok=True)
+    lock_file().write_text(str(os.getpid()), encoding="utf-8")
+
     record({"event": "start", "mode": "bmad", "repo": str(repo), "apply": apply,
             "branch": branch_of(repo), "max_steps": max_steps})
 
@@ -1242,121 +1257,205 @@ def run_story_shift(
     parked_this_shift: set[str] = set()
     consecutive_failures = 0
 
-    while len(shift.steps) < max_steps:
-        if stop.exists():
-            shift.ended = "stopped by hand (nightshift.stop)"
-            break
-        if time.monotonic() > deadline:
-            shift.ended = f"reached the {max_minutes}-minute budget"
-            break
-        now = datetime.now().astimezone()
-        if not ignore_window and not in_window(now):
-            shift.ended = "the night window closed"
-            break
-        if consecutive_failures >= max_consecutive_failures:
-            shift.ended = (f"{consecutive_failures} dispatches in a row produced nothing "
-                           "verifiable -- something is systematically wrong")
-            break
+    # Everything below is guarded. A shift that raises out of the loop used
+    # to leave a ledger reading `['start']` and nothing else -- indistinguish-
+    # able from one still running -- because an `FileExistsError` from
+    # `wt_module.create`, a `BmadFormatError` from a malformed second spec
+    # folder, or any other surprise skipped straight past the `record(...,
+    # "end")` call that used to sit only after the loop. `finally` here runs
+    # on every exit, including a re-raised exception, so the ledger always
+    # gets its closing entry even when this function still lets the error
+    # propagate to whoever called it.
+    try:
+        while len(shift.steps) < max_steps:
+            if stop.exists():
+                shift.ended = "stopped by hand (nightshift.stop)"
+                break
+            if time.monotonic() > deadline:
+                shift.ended = f"reached the {max_minutes}-minute budget"
+                break
+            now = datetime.now().astimezone()
+            if not ignore_window and not in_window(now):
+                shift.ended = "the night window closed"
+                break
+            if consecutive_failures >= max_consecutive_failures:
+                shift.ended = (f"{consecutive_failures} dispatches in a row produced nothing "
+                               "verifiable -- something is systematically wrong")
+                break
 
-        pick = queue.next_story(repo, exclude=frozenset(parked_this_shift))
-        for skipped, why in pick.skipped:
-            on_event(f"skipped {skipped.key}: {why}")
-        if pick.story is None:
-            shift.ended = pick.reason
-            break
+            pick = queue.next_story(repo, exclude=frozenset(parked_this_shift))
+            for skipped, why in pick.skipped:
+                # To the ledger as well as `on_event`: a story skipped for
+                # `spec_checkpoint` or a park count is not explainable at 8am
+                # from a recap line alone.
+                record({"event": "story-skipped", "story_key": skipped.key, "reason": why})
+                on_event(f"skipped {skipped.key}: {why}")
+            if pick.story is None:
+                shift.ended = pick.reason
+                break
 
-        story = pick.story
-        # The gate, over everything that reaches the prompt -- including
-        # `invoke_dev_with`, which is free text from a file about to run under
-        # the widest tool policy in this system.
-        screened = f"{story.title}\n{story.description}\n{story.invoke_dev_with}"
-        verdict = screen(screened)
-        step = Step(at=now.isoformat(timespec="seconds"),
-                    recommendation=f"{story.key}: {story.title}",
-                    verdict=verdict, story_key=story.key)
-        shift.steps.append(step)
+            story = pick.story
+            # The gate, over everything that reaches the prompt -- including
+            # `invoke_dev_with`, which is free text from a file about to run under
+            # the widest tool policy in this system.
+            screened = f"{story.title}\n{story.description}\n{story.invoke_dev_with}"
+            verdict = screen(screened)
+            step = Step(at=now.isoformat(timespec="seconds"),
+                        recommendation=f"{story.key}: {story.title}",
+                        verdict=verdict, story_key=story.key)
+            shift.steps.append(step)
 
-        if not verdict.ok:
-            parked_this_shift.add(story.key)
-            record({"event": queue.PARKED_EVENT, "story_key": story.key,
-                    "reason": verdict.reason, "matched": verdict.matched})
-            on_event(f"parked {story.key}: {verdict.reason}"
-                     + (f" ({verdict.matched!r})" if verdict.matched else ""))
-            continue
-
-        if not apply:
-            shift.ended = "dry run -- nothing dispatched; re-run with --apply"
-            record({"event": "would-continue", "story_key": story.key,
-                    "recommendation": step.recommendation})
-            on_event(f"would take {story.key}: {story.title}")
-            break
-
-        on_event(f"taking {story.key}: {story.title}")
-        tree = wt_module.create(repo, slug=story.slug, story_id=story.id)
-        step.branch = tree.branch
-        # The base of this story's diff, captured BEFORE anything runs.
-        # Deriving it afterwards from a reflog would be a guess, and a wrong
-        # base makes the verifier judge somebody else's work.
-        base_sha = _git_out(tree.path, "rev-parse", "HEAD").strip()
-        try:
-            code, output, seconds = dispatch_story(
-                story, worktree=tree, timeout_minutes=step_timeout_minutes)
-            step.dispatched = True
-            step.exit_code = code
-            step.seconds = seconds
-            step.output_tail = output[-1200:]
-
-            outcome = parse_outcome(output)
-            step.outcome_status = outcome.status
-            if outcome.status == "blocked":
-                consecutive_failures += 1
+            if not verdict.ok:
                 parked_this_shift.add(story.key)
                 record({"event": queue.PARKED_EVENT, "story_key": story.key,
-                        "reason": f"blocked: {outcome.error_code}", "detail": outcome.reason,
-                        "branch": tree.branch, "tail": outcome.raw_tail})
-                on_event(f"parked {story.key}: blocked ({outcome.error_code})")
+                        "reason": verdict.reason, "matched": verdict.matched})
+                on_event(f"parked {story.key}: {verdict.reason}"
+                         + (f" ({verdict.matched!r})" if verdict.matched else ""))
                 continue
 
-            diff = _git_out(tree.path, "diff", f"{base_sha}...HEAD")
-            checked = verify.check(story, worktree_path=tree.path, diff=diff,
-                                   timeout_minutes=step_timeout_minutes)
-            step.verified = checked.verified
-            step.verify_reason = checked.reason
+            if not apply:
+                shift.ended = "dry run -- nothing dispatched; re-run with --apply"
+                record({"event": "would-continue", "story_key": story.key,
+                        "recommendation": step.recommendation})
+                on_event(f"would take {story.key}: {story.title}")
+                break
 
-            pushed = push_branch(tree)
-            if checked.verified:
-                consecutive_failures = 0
-                pr = open_pr(tree, story) if pushed else ""
-                record({"event": queue.VERIFIED_EVENT, "story_key": story.key,
-                        "branch": tree.branch, "files": outcome.files,
-                        "reason": checked.reason, "pushed": pushed, "pr": pr,
-                        "seconds": seconds})
-                on_event(f"verified {story.key}: {checked.reason}")
-                if story.done_checkpoint:
-                    shift.ended = f"done_checkpoint on {story.key} -- a human asked to see this"
-                    break
-            else:
-                consecutive_failures += 1
-                parked_this_shift.add(story.key)
-                # Pushed but no PR: the work is preserved and reviewable, and
-                # it is not offered as done.
-                record({"event": queue.PARKED_EVENT, "story_key": story.key,
-                        "reason": f"not verified: {checked.reason}",
-                        "unmet": checked.unmet, "branch": tree.branch, "pushed": pushed})
-                on_event(f"parked {story.key}: not verified -- {checked.reason}")
-        finally:
-            on_event(wt_module.dispose(tree))
+            on_event(f"taking {story.key}: {story.title}")
+            tree = wt_module.create(repo, slug=story.slug, story_id=story.id)
+            step.branch = tree.branch
+            try:
+                # The base of this story's diff, captured BEFORE anything
+                # runs. Deriving it afterwards from a reflog would be a
+                # guess, and a wrong base makes the verifier judge somebody
+                # else's work. The exit status is checked, not just the
+                # text: `git diff` against a base that failed to resolve
+                # exits 0 with EMPTY output, which reads as "no changes"
+                # rather than "we could not tell" -- a silent wrong-base
+                # failure of exactly the kind this capture exists to avoid.
+                base_ok, base_out = _git_out(tree.path, "rev-parse", "HEAD")
+                base_sha = base_out.strip()
+                if not base_ok or not base_sha:
+                    consecutive_failures += 1
+                    parked_this_shift.add(story.key)
+                    record({"event": queue.PARKED_EVENT, "story_key": story.key,
+                            "reason": "could not read the worktree's base commit -- "
+                                      "refusing to diff against a guess",
+                            "branch": tree.branch})
+                    on_event(f"parked {story.key}: could not read the worktree's base commit")
+                    continue
 
-    if not shift.ended:
-        shift.ended = f"reached the {max_steps}-step budget"
-    record({"event": "end", "mode": "bmad", "reason": shift.ended,
-            "steps": len(shift.steps)})
+                code, output, seconds = dispatch_story(
+                    story, worktree=tree, timeout_minutes=step_timeout_minutes)
+                step.dispatched = True
+                step.exit_code = code
+                step.seconds = seconds
+                step.output_tail = output[-1200:]
+
+                outcome = parse_outcome(output)
+                step.outcome_status = outcome.status
+                # Fail closed: "complete" is the one value that passes, not
+                # "anything that isn't blocked". `parse_outcome` only ever
+                # returns one of the two today, but the check should say
+                # what it means rather than lean on that being permanent.
+                if outcome.status != "complete":
+                    consecutive_failures += 1
+                    parked_this_shift.add(story.key)
+                    record({"event": queue.PARKED_EVENT, "story_key": story.key,
+                            "reason": f"blocked: {outcome.error_code}", "detail": outcome.reason,
+                            "branch": tree.branch, "tail": outcome.raw_tail})
+                    on_event(f"parked {story.key}: blocked ({outcome.error_code})")
+                    continue
+
+                # `:!HOOKS_DIRNAME` excludes the boundary hook from the diff
+                # the verifier reads. `dispose`, below, excludes the same
+                # directory from its dirty check -- without the same
+                # exclusion here, an agent running `git add -A` hands the
+                # verifier its own containment mechanism as the first lines
+                # of "the work".
+                diff_ok, diff = _git_out(
+                    tree.path, "diff", f"{base_sha}...HEAD",
+                    "--", ".", f":!{wt_module.HOOKS_DIRNAME}")
+                if not diff_ok:
+                    consecutive_failures += 1
+                    parked_this_shift.add(story.key)
+                    record({"event": queue.PARKED_EVENT, "story_key": story.key,
+                            "reason": "could not read the story's diff -- "
+                                      "refusing to verify against a guess",
+                            "branch": tree.branch})
+                    on_event(f"parked {story.key}: could not read the story's diff")
+                    continue
+
+                checked = verify.check(story, worktree_path=tree.path, diff=diff,
+                                       timeout_minutes=step_timeout_minutes)
+                step.verified = checked.verified
+                step.verify_reason = checked.reason
+
+                pushed = push_branch(tree, story_key=story.key)
+                if checked.verified and pushed:
+                    consecutive_failures = 0
+                    pr = open_pr(tree, story)
+                    record({"event": queue.VERIFIED_EVENT, "story_key": story.key,
+                            "branch": tree.branch, "files": outcome.files,
+                            "reason": checked.reason, "pushed": pushed, "pr": pr,
+                            "seconds": seconds})
+                    on_event(f"verified {story.key}: {checked.reason}")
+                    if story.done_checkpoint:
+                        shift.ended = f"done_checkpoint on {story.key} -- a human asked to see this"
+                        break
+                else:
+                    consecutive_failures += 1
+                    parked_this_shift.add(story.key)
+                    # Verified but the push failed is NOT the same as "not
+                    # verified", and both are handled here rather than
+                    # letting a failed push slip through as `story-verified`
+                    # with `pushed: False` -- a story that leaves the queue
+                    # permanently on a night that produced no remote branch
+                    # and no PR. Either way it stays open for tomorrow; a
+                    # push that did succeed is preserved and reviewable
+                    # rather than discarded.
+                    if checked.verified:
+                        reason = f"verified but the push failed: {checked.reason}"
+                    else:
+                        reason = f"not verified: {checked.reason}"
+                    record({"event": queue.PARKED_EVENT, "story_key": story.key,
+                            "reason": reason, "unmet": checked.unmet,
+                            "branch": tree.branch, "pushed": pushed})
+                    on_event(f"parked {story.key}: {reason}")
+            finally:
+                disposal = wt_module.dispose(tree)
+                on_event(disposal)
+                if not disposal.startswith("removed "):
+                    # `dispose` correctly refuses to force-remove a dirty
+                    # tree, but that refusal reaching only `on_event` means a
+                    # night that leaves one behind reads as a clean `start /
+                    # story-verified / end` in the ledger, with no hint two
+                    # worktrees are still on disk -- until tomorrow's
+                    # `create` raises a surprise `FileExistsError`.
+                    record({"event": "worktree-left", "story_key": story.key,
+                            "branch": tree.branch, "path": str(tree.path),
+                            "detail": disposal})
+    except BaseException as exc:
+        if not shift.ended:
+            shift.ended = f"story shift crashed: {exc!r}"
+        raise
+    finally:
+        lock_file().unlink(missing_ok=True)
+        if not shift.ended:
+            shift.ended = f"reached the {max_steps}-step budget"
+        record({"event": "end", "mode": "bmad", "reason": shift.ended,
+                "steps": len(shift.steps)})
     return shift
 
 
-def _git_out(cwd: Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(cwd), *args],
-                          capture_output=True, text=True).stdout
+def _git_out(cwd: Path, *args: str) -> tuple[bool, str]:
+    """(ok, stdout). A non-zero exit is not "no output": `git diff` against a
+    base that failed to resolve exits 0 with nothing to show, which reads as
+    "no changes" rather than "we could not tell". Both call sites in
+    `run_story_shift` check `ok` before trusting the text.
+    """
+    result = subprocess.run(["git", "-C", str(cwd), *args],
+                            capture_output=True, text=True)
+    return result.returncode == 0, result.stdout
 
 
 def dispatch_story(story, *, worktree, timeout_minutes: int) -> tuple[int, str, float]:
@@ -1369,28 +1468,54 @@ def dispatch_story(story, *, worktree, timeout_minutes: int) -> tuple[int, str, 
             timeout=timeout_minutes * 60, env=child_env())
     except subprocess.TimeoutExpired:
         return 124, f"timed out after {timeout_minutes} minutes", time.monotonic() - started
-    return result.returncode, (result.stdout or ""), time.monotonic() - started
+    except OSError as exc:
+        # Mirrors `dispatch`: a `claude` that is not on PATH must not crash
+        # the shift with no ledger entry -- it reads as a blocked story
+        # instead. `parse_outcome` on this text finds no contract and blocks
+        # with `no_contract`, the correct verdict for "this never ran".
+        return 127, f"could not start claude: {exc}", time.monotonic() - started
+    # Falls back to stderr, as `dispatch` does: a failing `claude` writes its
+    # explanation there, and that tail is the only evidence of what a run
+    # thought it was doing -- losing it to an empty stdout defeats the point
+    # of keeping it at all.
+    return result.returncode, (result.stdout or result.stderr or ""), time.monotonic() - started
 
 
-def push_branch(tree) -> bool:
+def push_branch(tree, *, story_key: str) -> bool:
     """Push the story branch. The hook is what makes this safe, not this call."""
-    result = subprocess.run(
-        ["git", "-C", str(tree.path), "push", "-u", "origin",
-         f"HEAD:refs/heads/{tree.branch}"],
-        capture_output=True, text=True, env=child_env())
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(tree.path), "push", "-u", "origin",
+             f"HEAD:refs/heads/{tree.branch}"],
+            capture_output=True, text=True, env=child_env())
+    except OSError as exc:
+        record({"event": "push-failed", "story_key": story_key, "branch": tree.branch,
+                "stderr": f"could not run git: {exc}"})
+        return False
     if result.returncode != 0:
-        record({"event": "push-failed", "branch": tree.branch,
+        # `story_key` is the ledger's join key -- `queue.completed_keys` and
+        # `park_counts` both filter on it, and an entry missing it cannot be
+        # joined back to the story it happened to.
+        record({"event": "push-failed", "story_key": story_key, "branch": tree.branch,
                 "stderr": result.stderr.strip()[-400:]})
     return result.returncode == 0
 
 
 def open_pr(tree, story) -> str:
     """Open a PR for a verified story. Never merges it."""
-    result = subprocess.run(
-        ["gh", "pr", "create", "--head", tree.branch,
-         "--title", f"{story.key}: {story.title}",
-         "--body", f"Implemented unattended from `{story.spec_dir}`.\n\n"
-                   f"{story.description}\n\nVerified against the story's "
-                   f"acceptance criteria. Not merged: read it first."],
-        cwd=str(tree.path), capture_output=True, text=True, env=child_env())
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "create", "--head", tree.branch,
+             "--title", f"{story.key}: {story.title}",
+             "--body", f"Implemented unattended from `{story.spec_dir}`.\n\n"
+                       f"{story.description}\n\nVerified against the story's "
+                       f"acceptance criteria. Not merged: read it first."],
+            cwd=str(tree.path), capture_output=True, text=True, env=child_env())
+    except OSError as exc:
+        record({"event": "pr-failed", "story_key": story.key, "branch": tree.branch,
+                "stderr": f"could not run gh: {exc}"})
+        return ""
+    if result.returncode != 0:
+        record({"event": "pr-failed", "story_key": story.key, "branch": tree.branch,
+                "stderr": result.stderr.strip()[-400:]})
     return result.stdout.strip() if result.returncode == 0 else ""
