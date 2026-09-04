@@ -2203,8 +2203,11 @@ def test_a_shift_refuses_to_start_on_a_default_branch(swarm_home, tmp_path):
 
 - [ ] **Step 7: Run the full suite**
 
-Run: `python -m pytest tests/ -v`
-Expected: PASS — everything, including all pre-existing tests.
+Run: `python -m pytest tests/test_*.py tests/swarm_*.py -v`
+
+Both globs are required. This repo has **no `[tool.pytest.ini_options]`**, so pytest's default `python_files` is `test_*.py *_test.py` — a bare `pytest` or `pytest tests/` collects 403 tests and **zero** from any `swarm_*.py` file. Every gate in this plan that said "run the full suite" would otherwise have skipped the entire half of the codebase this feature lives in.
+
+Expected: the new tests pass, and `tests/swarm_project.py` shows **9 pre-existing `FileNotFoundError` failures** unrelated to this work (that file is untouched by this plan). Treat any *other* failure as yours.
 
 - [ ] **Step 8: Commit**
 
@@ -2533,8 +2536,9 @@ restricted. Read `swarm nightshift recap` before trusting a night's work.
 
 - [ ] **Step 8: Run the full suite**
 
-Run: `python -m pytest tests/ -v`
-Expected: PASS
+Run: `python -m pytest tests/test_*.py tests/swarm_*.py -v`
+
+See Task 7 Step 7 on why both globs are needed. Expected: the new tests pass; the 9 pre-existing `swarm_project.py` failures remain and are not yours.
 
 - [ ] **Step 9: Commit**
 
