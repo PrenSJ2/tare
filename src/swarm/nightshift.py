@@ -63,7 +63,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time as clock_time
 from pathlib import Path
 
-from . import paths, reader, worktree as wt_module
+from . import bmad, paths, reader, worktree as wt_module
 
 # Default night window, local time. Outside it, `start` refuses rather than
 # running -- "night automation" that fires at 2pm is just automation, and the
@@ -383,6 +383,11 @@ class Step:
     commits: list[str] = field(default_factory=list)
     changed: bool = False
     output_tail: str = ""
+    story_key: str = ""
+    branch: str = ""
+    outcome_status: str = ""
+    verified: bool = False
+    verify_reason: str = ""
 
 
 # The headless contract, from BMAD's `headless-schemas.md`:
@@ -1183,3 +1188,209 @@ def recap(entries: list[dict]) -> str:
 def available() -> bool:
     """Is there a `claude` to dispatch to at all?"""
     return shutil.which("claude") is not None
+
+
+# ---------------------------------------------------------------------------
+# Story mode
+# ---------------------------------------------------------------------------
+#
+# A separate function rather than a flag on `run_shift`. The two modes differ
+# in what they read (a plan vs a chat message), what they dispatch, what ends
+# them, and which tool policy they run under -- a shared body with a mode flag
+# would be two functions sharing a name and a set of bugs.
+
+DEFAULT_MAX_CONSECUTIVE_FAILURES = 3
+
+
+def run_story_shift(
+    repo: Path,
+    *,
+    apply: bool = False,
+    max_steps: int = DEFAULT_MAX_STEPS,
+    max_minutes: int = DEFAULT_MAX_MINUTES,
+    step_timeout_minutes: int = DEFAULT_STEP_TIMEOUT_MINUTES,
+    max_consecutive_failures: int = DEFAULT_MAX_CONSECUTIVE_FAILURES,
+    ignore_window: bool = True,
+    on_event=lambda line: None,
+) -> Shift:
+    """Work the BMAD queue until it runs dry or a backstop stops it.
+
+    `ignore_window` defaults True here: the window belonged to an envelope
+    that also had a narrow tool policy and a terminal refusal. This mode has
+    neither, and pretending the clock is still a control would be decoration.
+    """
+    from . import queue, verify
+
+    shift = Shift(session="", repo=repo)
+    if not bmad.is_installed(repo):
+        shift.ended = (f"no BMAD install at {bmad.config_path(repo)} -- "
+                       "story mode will not fall back to reading a chat message")
+        record({"event": "refused", "reason": shift.ended, "repo": str(repo)})
+        return shift
+
+    repo_verdict = check_repo(repo)
+    if not repo_verdict.ok:
+        shift.ended = repo_verdict.reason
+        record({"event": "refused", "reason": shift.ended, "repo": str(repo)})
+        return shift
+
+    record({"event": "start", "mode": "bmad", "repo": str(repo), "apply": apply,
+            "branch": branch_of(repo), "max_steps": max_steps})
+
+    deadline = time.monotonic() + max_minutes * 60
+    stop = stop_file()
+    parked_this_shift: set[str] = set()
+    consecutive_failures = 0
+
+    while len(shift.steps) < max_steps:
+        if stop.exists():
+            shift.ended = "stopped by hand (nightshift.stop)"
+            break
+        if time.monotonic() > deadline:
+            shift.ended = f"reached the {max_minutes}-minute budget"
+            break
+        now = datetime.now().astimezone()
+        if not ignore_window and not in_window(now):
+            shift.ended = "the night window closed"
+            break
+        if consecutive_failures >= max_consecutive_failures:
+            shift.ended = (f"{consecutive_failures} dispatches in a row produced nothing "
+                           "verifiable -- something is systematically wrong")
+            break
+
+        pick = queue.next_story(repo, exclude=frozenset(parked_this_shift))
+        for skipped, why in pick.skipped:
+            on_event(f"skipped {skipped.key}: {why}")
+        if pick.story is None:
+            shift.ended = pick.reason
+            break
+
+        story = pick.story
+        # The gate, over everything that reaches the prompt -- including
+        # `invoke_dev_with`, which is free text from a file about to run under
+        # the widest tool policy in this system.
+        screened = f"{story.title}\n{story.description}\n{story.invoke_dev_with}"
+        verdict = screen(screened)
+        step = Step(at=now.isoformat(timespec="seconds"),
+                    recommendation=f"{story.key}: {story.title}",
+                    verdict=verdict, story_key=story.key)
+        shift.steps.append(step)
+
+        if not verdict.ok:
+            parked_this_shift.add(story.key)
+            record({"event": queue.PARKED_EVENT, "story_key": story.key,
+                    "reason": verdict.reason, "matched": verdict.matched})
+            on_event(f"parked {story.key}: {verdict.reason}"
+                     + (f" ({verdict.matched!r})" if verdict.matched else ""))
+            continue
+
+        if not apply:
+            shift.ended = "dry run -- nothing dispatched; re-run with --apply"
+            record({"event": "would-continue", "story_key": story.key,
+                    "recommendation": step.recommendation})
+            on_event(f"would take {story.key}: {story.title}")
+            break
+
+        on_event(f"taking {story.key}: {story.title}")
+        tree = wt_module.create(repo, slug=story.slug, story_id=story.id)
+        step.branch = tree.branch
+        # The base of this story's diff, captured BEFORE anything runs.
+        # Deriving it afterwards from a reflog would be a guess, and a wrong
+        # base makes the verifier judge somebody else's work.
+        base_sha = _git_out(tree.path, "rev-parse", "HEAD").strip()
+        try:
+            code, output, seconds = dispatch_story(
+                story, worktree=tree, timeout_minutes=step_timeout_minutes)
+            step.dispatched = True
+            step.exit_code = code
+            step.seconds = seconds
+            step.output_tail = output[-1200:]
+
+            outcome = parse_outcome(output)
+            step.outcome_status = outcome.status
+            if outcome.status == "blocked":
+                consecutive_failures += 1
+                parked_this_shift.add(story.key)
+                record({"event": queue.PARKED_EVENT, "story_key": story.key,
+                        "reason": f"blocked: {outcome.error_code}", "detail": outcome.reason,
+                        "branch": tree.branch, "tail": outcome.raw_tail})
+                on_event(f"parked {story.key}: blocked ({outcome.error_code})")
+                continue
+
+            diff = _git_out(tree.path, "diff", f"{base_sha}...HEAD")
+            checked = verify.check(story, worktree_path=tree.path, diff=diff,
+                                   timeout_minutes=step_timeout_minutes)
+            step.verified = checked.verified
+            step.verify_reason = checked.reason
+
+            pushed = push_branch(tree)
+            if checked.verified:
+                consecutive_failures = 0
+                pr = open_pr(tree, story) if pushed else ""
+                record({"event": queue.VERIFIED_EVENT, "story_key": story.key,
+                        "branch": tree.branch, "files": outcome.files,
+                        "reason": checked.reason, "pushed": pushed, "pr": pr,
+                        "seconds": seconds})
+                on_event(f"verified {story.key}: {checked.reason}")
+                if story.done_checkpoint:
+                    shift.ended = f"done_checkpoint on {story.key} -- a human asked to see this"
+                    break
+            else:
+                consecutive_failures += 1
+                parked_this_shift.add(story.key)
+                # Pushed but no PR: the work is preserved and reviewable, and
+                # it is not offered as done.
+                record({"event": queue.PARKED_EVENT, "story_key": story.key,
+                        "reason": f"not verified: {checked.reason}",
+                        "unmet": checked.unmet, "branch": tree.branch, "pushed": pushed})
+                on_event(f"parked {story.key}: not verified -- {checked.reason}")
+        finally:
+            on_event(wt_module.dispose(tree))
+
+    if not shift.ended:
+        shift.ended = f"reached the {max_steps}-step budget"
+    record({"event": "end", "mode": "bmad", "reason": shift.ended,
+            "steps": len(shift.steps)})
+    return shift
+
+
+def _git_out(cwd: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(cwd), *args],
+                          capture_output=True, text=True).stdout
+
+
+def dispatch_story(story, *, worktree, timeout_minutes: int) -> tuple[int, str, float]:
+    """One iteration of `bmad-build-auto`, inside the worktree."""
+    started = time.monotonic()
+    try:
+        result = subprocess.run(
+            build_story_command(story, worktree_path=worktree.path),
+            cwd=str(worktree.path), capture_output=True, text=True,
+            timeout=timeout_minutes * 60, env=child_env())
+    except subprocess.TimeoutExpired:
+        return 124, f"timed out after {timeout_minutes} minutes", time.monotonic() - started
+    return result.returncode, (result.stdout or ""), time.monotonic() - started
+
+
+def push_branch(tree) -> bool:
+    """Push the story branch. The hook is what makes this safe, not this call."""
+    result = subprocess.run(
+        ["git", "-C", str(tree.path), "push", "-u", "origin",
+         f"HEAD:refs/heads/{tree.branch}"],
+        capture_output=True, text=True, env=child_env())
+    if result.returncode != 0:
+        record({"event": "push-failed", "branch": tree.branch,
+                "stderr": result.stderr.strip()[-400:]})
+    return result.returncode == 0
+
+
+def open_pr(tree, story) -> str:
+    """Open a PR for a verified story. Never merges it."""
+    result = subprocess.run(
+        ["gh", "pr", "create", "--head", tree.branch,
+         "--title", f"{story.key}: {story.title}",
+         "--body", f"Implemented unattended from `{story.spec_dir}`.\n\n"
+                   f"{story.description}\n\nVerified against the story's "
+                   f"acceptance criteria. Not merged: read it first."],
+        cwd=str(tree.path), capture_output=True, text=True, env=child_env())
+    return result.stdout.strip() if result.returncode == 0 else ""
