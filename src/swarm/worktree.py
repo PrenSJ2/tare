@@ -12,6 +12,25 @@ night's work is a branch and a diff read in the morning. Under the widened
 policy, filesystem writes outside the repository and network egress are
 unconstrained, and this module does not pretend otherwise.
 
+The pre-push hook is a guardrail, not containment, and the distinction
+matters: it stops an agent that pushes somewhere it did not mean to, not one
+that is trying to push somewhere it is not supposed to. The hook is a file
+inside the worktree the agent has write access to, so an agent that wants
+around it has several one-line ways through: `git push --no-verify`;
+`git -c core.hooksPath= push`; overriding config for the single invocation
+with `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`; or simply
+deleting `.nightshift-hooks/pre-push` before pushing. Each of those was
+verified against this module's own hook. None require anything beyond the
+tool access an unattended run already has.
+
+That does not make the hook worthless. The realistic failure mode for a
+non-adversarial agent is an accident, not an escape attempt: `git push
+origin HEAD:main` typed from habit, a stray `--tags`, a `--mirror` meant for
+somewhere else. Against exactly that class of mistake the hook is
+deterministic and turns it into a hard refusal instead of a successful push
+to the wrong ref. It is not a defense against an agent that is trying to get
+past it, and this module does not claim otherwise.
+
 ## Why the restriction is a hook and not an --allowedTools pattern
 
 `--allowedTools` matches command prefixes. `Bash(git push:*)` is all-or-
@@ -20,7 +39,10 @@ nothing and `Bash(git push origin nightshift/:*)` walks straight through on
 it stops mattering. A refspec restriction cannot be written as a prefix, so it
 is enforced where refspecs actually exist: a `pre-push` hook that reads the
 remote ref off stdin and exits non-zero for anything outside
-`refs/heads/nightshift/`. Deterministic, inspectable, fails closed.
+`refs/heads/nightshift/`. Deterministic and inspectable for the refspecs it
+actually receives from git, and fails closed on them: an unmatched or
+malformed line is a refusal, not a pass. That is a narrower claim than
+"cannot be bypassed" -- see above for what it does not defend against.
 
 ## The trap this module exists to avoid
 
@@ -39,7 +61,6 @@ only one this module makes, and it is inert for anyone not using worktrees.
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,8 +81,11 @@ PRE_PUSH_HOOK = f"""#!/bin/sh
 #
 # Refuses any push outside {ALLOWED_REF_PREFIX}. This is the boundary that
 # replaces the narrow tool allowlist, so it fails closed: an unreadable line
-# is a refusal, not a pass.
-while read -r local_ref local_sha remote_ref remote_sha
+# is a refusal, not a pass -- including a final line with no trailing
+# newline, which plain `while read` would otherwise silently skip rather
+# than refuse. `|| [ -n "$remote_ref" ]` is what makes the loop body run one
+# more time for that line before `read` finally reports end-of-input.
+while read -r local_ref local_sha remote_ref remote_sha || [ -n "$remote_ref" ]
 do
     case "$remote_ref" in
         {ALLOWED_REF_PREFIX}?*)
@@ -125,6 +149,15 @@ def install_hook(worktree_path: Path) -> Path:
     _git(worktree_path, "config", "extensions.worktreeConfig", "true")
     result = _git(worktree_path, "config", "--worktree", "core.hooksPath", str(hooks))
     if result.returncode != 0:
+        # Leave nothing behind: an operator or a later `create` should never
+        # find a `.nightshift-hooks` directory whose hook was never actually
+        # wired up. `rmdir` rather than a recursive remove -- this directory
+        # holds nothing but the file this function just wrote.
+        hook.unlink(missing_ok=True)
+        try:
+            hooks.rmdir()
+        except OSError:
+            pass
         raise RuntimeError(
             "could not scope core.hooksPath to the worktree "
             f"({result.stderr.strip()}); refusing to continue, because the "
@@ -153,7 +186,15 @@ def create(repo: Path, *, slug: str, story_id: str, base: str = "HEAD") -> Workt
     if result.returncode != 0:
         raise RuntimeError(f"git worktree add failed: {result.stderr.strip()}")
 
-    install_hook(path)
+    try:
+        install_hook(path)
+    except Exception:
+        # An unprotected worktree is worse than none: it sits inside this
+        # module's own directory looking like a safe tree, but nothing
+        # stops a push from it. Remove it rather than leave it behind for a
+        # retry to trip over as a stale FileExistsError with no self-heal.
+        _git(repo, "worktree", "remove", "--force", str(path))
+        raise
     return Worktree(path=path, branch=branch, repo=repo)
 
 
@@ -195,16 +236,54 @@ def dispose(tree: Worktree, *, force: bool = False) -> str:
 
 
 def orphans(repo: Path) -> list[tuple[Path, str]]:
-    """Worktrees this module created that a shift never cleaned up."""
-    listed = _git(repo, "worktree", "list", "--porcelain").stdout
+    """Worktrees a shift never cleaned up, however they got left that way.
+
+    Matches on two, independent signals: a worktree whose branch is still
+    under `refs/heads/nightshift/`, OR a worktree whose directory sits under
+    `worktrees_root(repo)` -- the directory only `create` ever populates.
+    The second signal exists because the first is not reliable: an agent
+    that runs `git checkout --detach`, or renames or deletes its branch,
+    makes the tree invisible to a branch-only check while the directory
+    (and whatever it pushed, or didn't) stays right where `create` left it.
+    `create`'s own refusal to reuse an existing directory points an operator
+    here, so silently under-reporting is worse than reporting too much.
+    """
+    result = _git(repo, "worktree", "list", "--porcelain")
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"could not list worktrees for {repo} ({result.stderr.strip()}); "
+            "refusing to report an empty list, because `create` sends an "
+            "operator here on the assumption that an empty result means "
+            "there is nothing to clean up")
+
+    root = worktrees_root(repo).resolve()
     out: list[tuple[Path, str]] = []
+    seen: set[Path] = set()
+
+    def flush(path: Path | None, ref: str | None) -> None:
+        if path is None:
+            return
+        namespaced = ref is not None and ref.startswith(ALLOWED_REF_PREFIX)
+        try:
+            path.resolve().relative_to(root)
+            under_root = True
+        except ValueError:
+            under_root = False
+        if (namespaced or under_root) and path not in seen:
+            seen.add(path)
+            out.append((path, ref if ref is not None else "detached"))
+
     current: Path | None = None
-    for line in listed.splitlines():
+    current_ref: str | None = None
+    for line in result.stdout.splitlines():
         if line.startswith("worktree "):
+            flush(current, current_ref)
             current = Path(line[len("worktree "):])
-        elif line.startswith("branch ") and current is not None:
-            ref = line[len("branch "):].strip()
-            if ref.startswith(ALLOWED_REF_PREFIX):
-                out.append((current, ref))
-            current = None
+            current_ref = None
+        elif line.startswith("branch "):
+            current_ref = line[len("branch "):].strip()
+        elif line == "":
+            flush(current, current_ref)
+            current, current_ref = None, None
+    flush(current, current_ref)
     return out

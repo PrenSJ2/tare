@@ -86,6 +86,51 @@ def test_the_hook_refuses_any_ref_outside_the_namespace(repo_with_remote, refspe
     assert "refusing to push" in pushed.stderr
 
 
+def test_the_hook_refuses_an_unterminated_final_line(repo_with_remote):
+    """`while read` alone returns non-zero on a final line with no trailing
+    newline -- that would SKIP the line, not refuse it. Git always
+    newline-terminates its own input, so this is not reachable through a
+    real `git push` today; it is tested directly against the hook because a
+    fail-closed claim should hold even for input git doesn't currently send.
+    """
+    tree = wt.create(repo_with_remote, slug="spec-alpha", story_id="1")
+    hook_path = tree.path / wt.HOOKS_DIRNAME / "pre-push"
+
+    result = subprocess.run(
+        ["sh", str(hook_path)],
+        input="refs/heads/x deadbeef refs/heads/main cafebabe",  # no trailing newline
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0, "an unterminated final line was skipped, not refused"
+    assert "refusing to push" in result.stderr
+
+
+def test_install_hook_raises_and_cleans_up_when_scoping_fails(repo_with_remote, monkeypatch):
+    """The regression this module exists to prevent: if `--worktree` scoping
+    ever silently fell back to a repo-wide hook, nothing else in the suite
+    would catch it. `install_hook` must raise instead -- and not leave its
+    bookkeeping directory behind for a later `create` to trip over.
+    """
+    tree_path = wt.worktrees_root(repo_with_remote) / "manual"
+    tree_path.parent.mkdir(parents=True, exist_ok=True)
+    _git("worktree", "add", "-q", "-b", "manual-branch", str(tree_path), cwd=repo_with_remote)
+
+    real_git = wt._git
+
+    def _fake_git(repo, *args):
+        if args[:2] == ("config", "--worktree"):
+            return subprocess.CompletedProcess(list(args), 1, "", "simulated: cannot scope")
+        return real_git(repo, *args)
+
+    monkeypatch.setattr(wt, "_git", _fake_git)
+
+    with pytest.raises(RuntimeError, match="could not scope"):
+        wt.install_hook(tree_path)
+
+    assert not (tree_path / wt.HOOKS_DIRNAME).exists()
+    assert not (repo_with_remote / ".git" / "hooks" / "pre-push").exists()
+
+
 def test_the_hook_does_not_leak_into_the_operators_own_repository(repo_with_remote):
     """The trap: worktrees share .git/hooks with the main working tree.
 
@@ -114,6 +159,55 @@ def test_orphans_reports_a_worktree_a_shift_left_behind(repo_with_remote):
     found = wt.orphans(repo_with_remote)
     assert [ref for _, ref in found] == ["refs/heads/nightshift/spec-alpha/1"]
     assert found[0][0].resolve() == tree.path.resolve()
+
+
+def test_orphans_fails_closed_when_it_cannot_list_worktrees(tmp_path):
+    """An empty result must never be the answer to a failure.
+
+    `create`'s own refusal to reuse an existing directory tells an operator
+    to run `swarm doctor` (which calls this). If `git worktree list` itself
+    fails and `orphans` swallowed that into `[]`, doctor would report
+    "nothing to clean up" about a repository it could not even read.
+    """
+    not_a_repo = tmp_path / "not-a-repo"
+    not_a_repo.mkdir()
+    with pytest.raises(RuntimeError):
+        wt.orphans(not_a_repo)
+
+
+def test_orphans_sees_a_worktree_whose_branch_moved(repo_with_remote):
+    """A branch-only check goes blind the moment the branch does; the
+    directory `create` left behind does not move with it.
+    """
+    tree = wt.create(repo_with_remote, slug="spec-alpha", story_id="1")
+    _git("checkout", "--detach", "-q", cwd=tree.path)
+
+    found = wt.orphans(repo_with_remote)
+
+    assert [p.resolve() for p, _ in found] == [tree.path.resolve()]
+
+
+def test_create_cleans_up_when_install_hook_fails(repo_with_remote, monkeypatch):
+    """An unprotected worktree left behind is worse than none -- it sits
+    inside this module's own directory looking safe, and a retry would hit
+    a stale FileExistsError forever with no way to self-heal.
+    """
+    def _boom(worktree_path):
+        raise RuntimeError("simulated hook failure")
+
+    monkeypatch.setattr(wt, "install_hook", _boom)
+
+    with pytest.raises(RuntimeError, match="simulated hook failure"):
+        wt.create(repo_with_remote, slug="spec-alpha", story_id="1")
+
+    leftover = wt.worktrees_root(repo_with_remote) / "nightshift__spec-alpha__1"
+    assert not leftover.exists()
+
+    # and the failure is not durable: a retry with a working install_hook
+    # succeeds rather than tripping FileExistsError over the cleaned-up path.
+    monkeypatch.undo()
+    tree = wt.create(repo_with_remote, slug="spec-alpha", story_id="1")
+    assert tree.path.is_dir()
 
 
 def test_dispose_refuses_to_discard_uncommitted_work(repo_with_remote):
