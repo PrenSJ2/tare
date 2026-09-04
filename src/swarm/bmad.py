@@ -22,7 +22,7 @@ and the story re-dispatches every night looking untouched.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -34,16 +34,18 @@ _ID_OK = re.compile(r"\A[A-Za-z0-9-]+\Z")
 
 
 class BmadFormatError(Exception):
-    """A `stories.yaml` that cannot be trusted as a plan.
+    """A BMAD file that cannot be trusted as a plan.
 
     Carries the schema rule number so `doctor` can report drift as drift
-    rather than as an empty queue.
+    rather than as an empty queue. Tracks the source file (stories.yaml or
+    config.yaml) so error messages identify which file is broken.
     """
 
-    def __init__(self, rule: int, detail: str):
-        super().__init__(f"stories.yaml violates validity rule {rule}: {detail}")
+    def __init__(self, rule: int, detail: str, source: str = "stories.yaml"):
+        super().__init__(f"{source} violates validity rule {rule}: {detail}")
         self.rule = rule
         self.detail = detail
+        self.source = source
 
 
 @dataclass(frozen=True)
@@ -123,13 +125,28 @@ def parse_stories(text: str, *, spec_dir: Path) -> list[Story]:
         if not isinstance(description, str) or not description.strip():
             raise BmadFormatError(1, f"story {raw_id!r} has no usable `description`")
 
+        # Validate checkpoint fields: must be real YAML booleans or absent.
+        # `bool("false")` returns True, which is a silent misparse that affects
+        # whether an unattended loop pauses for a human. Refuse any value that
+        # is not a bool and not the default absence.
+        spec_cp = entry.get("spec_checkpoint")
+        if spec_cp is not None and not isinstance(spec_cp, bool):
+            raise BmadFormatError(
+                1, f"story {raw_id!r} has `spec_checkpoint: {spec_cp!r}` "
+                   f"({type(spec_cp).__name__}); must be a YAML boolean (true/false) or absent")
+        done_cp = entry.get("done_checkpoint")
+        if done_cp is not None and not isinstance(done_cp, bool):
+            raise BmadFormatError(
+                1, f"story {raw_id!r} has `done_checkpoint: {done_cp!r}` "
+                   f"({type(done_cp).__name__}); must be a YAML boolean (true/false) or absent")
+
         stories.append(Story(
             id=raw_id,
             title=title.strip(),
             description=description.strip(),
             spec_dir=spec_dir,
-            spec_checkpoint=bool(entry.get("spec_checkpoint", False)),
-            done_checkpoint=bool(entry.get("done_checkpoint", False)),
+            spec_checkpoint=bool(spec_cp) if spec_cp is not None else False,
+            done_checkpoint=bool(done_cp) if done_cp is not None else False,
             invoke_dev_with=str(entry.get("invoke_dev_with", "") or "").strip(),
         ))
     return stories
@@ -164,7 +181,7 @@ def read_config(repo: Path) -> dict:
     try:
         loaded = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace"))
     except yaml.YAMLError as exc:
-        raise BmadFormatError(1, f"{path} does not parse as YAML: {exc}") from exc
+        raise BmadFormatError(1, f"file does not parse as YAML: {exc}", source="config.yaml") from exc
     return loaded if isinstance(loaded, dict) else {}
 
 

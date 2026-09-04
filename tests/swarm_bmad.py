@@ -142,3 +142,58 @@ def test_a_folder_without_stories_yaml_is_not_a_spec_folder(tmp_path):
 def test_no_install_means_no_spec_folders(tmp_path):
     assert bmad.spec_folders(tmp_path) == []
     assert bmad.is_installed(tmp_path) is False
+
+
+# --- error messages identify the correct file ---------------------------------
+
+def test_a_malformed_config_yaml_names_config_not_stories(tmp_path):
+    """A broken config.yaml should be identified in the error message, not stories.yaml."""
+    cfg = tmp_path / "_bmad" / "bmm"
+    cfg.mkdir(parents=True, exist_ok=True)
+    # Write invalid YAML to config.yaml
+    (cfg / "config.yaml").write_text("invalid: [unclosed\n")
+
+    with pytest.raises(bmad.BmadFormatError) as exc:
+        bmad.output_root(tmp_path)
+    assert exc.value.rule == 1
+    assert exc.value.source == "config.yaml"
+    assert "config.yaml" in str(exc.value)
+    assert "does not parse as YAML" in exc.value.detail
+
+
+# --- checkpoint field validation -----------------------------------------------
+
+def test_spec_checkpoint_true_and_false_parse_correctly(tmp_path):
+    """Actual YAML booleans must be accepted."""
+    text = '- id: "1"\n  title: T\n  description: D\n  spec_checkpoint: true\n- id: "2"\n  title: T\n  description: D\n  spec_checkpoint: false\n'
+    stories = bmad.parse_stories(text, spec_dir=tmp_path)
+    assert stories[0].spec_checkpoint is True
+    assert stories[1].spec_checkpoint is False
+
+
+def test_checkpoint_fields_absent_give_the_default(tmp_path):
+    """Omitting checkpoint fields should use the default False."""
+    text = '- id: "1"\n  title: T\n  description: D\n'
+    stories = bmad.parse_stories(text, spec_dir=tmp_path)
+    assert stories[0].spec_checkpoint is False
+    assert stories[0].done_checkpoint is False
+
+
+def test_a_quoted_spec_checkpoint_false_string_is_refused(tmp_path):
+    """The dangerous case: `spec_checkpoint: "false"` parses as a string, not a bool."""
+    text = '- id: "1"\n  title: T\n  description: D\n  spec_checkpoint: "false"\n'
+    with pytest.raises(bmad.BmadFormatError) as exc:
+        bmad.parse_stories(text, spec_dir=tmp_path)
+    assert exc.value.rule == 1
+    assert "spec_checkpoint" in exc.value.detail
+    assert "'false'" in exc.value.detail
+
+
+def test_a_numeric_done_checkpoint_is_refused(tmp_path):
+    """Integers must be refused, not silently coerced to bool."""
+    text = '- id: "1"\n  title: T\n  description: D\n  done_checkpoint: 1\n'
+    with pytest.raises(bmad.BmadFormatError) as exc:
+        bmad.parse_stories(text, spec_dir=tmp_path)
+    assert exc.value.rule == 1
+    assert "done_checkpoint" in exc.value.detail
+    assert "int" in exc.value.detail
