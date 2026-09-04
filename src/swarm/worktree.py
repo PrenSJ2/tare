@@ -168,9 +168,19 @@ def dispose(tree: Worktree, *, force: bool = False) -> str:
     own bookkeeping (the pre-push hook), always untracked, and present in
     every worktree it creates. Counting it would make every worktree look
     dirty and `dispose` would never actually remove one.
+
+    A `git status` that fails outright -- the path is gone, the index is
+    locked, the pathspec syntax is unsupported, the repo is in a broken state
+    -- is treated as dirty, not clean. This is the one path in the module
+    where guessing wrong destroys the only record of the night, so an
+    unreadable tree is left in place rather than force-removed.
     """
-    dirty = _git(tree.path, "status", "--porcelain", "--",
-                 ".", f":!{HOOKS_DIRNAME}").stdout.strip()
+    status = _git(tree.path, "status", "--porcelain", "--",
+                  ".", f":!{HOOKS_DIRNAME}")
+    if status.returncode != 0:
+        return (f"left in place: {tree.path} -- could not read its status "
+                f"({status.stderr.strip()[:200]})")
+    dirty = status.stdout.strip()
     if dirty and not force:
         return f"left in place: {tree.path} has uncommitted changes"
     # `--force` unconditionally: `git worktree remove`'s own dirty check does

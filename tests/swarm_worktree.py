@@ -130,6 +130,35 @@ def test_dispose_removes_a_clean_worktree(repo_with_remote):
     assert not tree.path.exists()
 
 
+def test_dispose_fails_closed_when_status_cannot_be_read(repo_with_remote):
+    """A `git status` that errors out is treated as dirty, not clean.
+
+    This is the one path in the module where guessing wrong destroys the
+    only record of the night, so an unreadable tree must be left in place,
+    never force-removed.
+    """
+    tree = wt.create(repo_with_remote, slug="spec-alpha", story_id="1")
+    ghost = wt.Worktree(path=tree.path / "does-not-exist", branch=tree.branch, repo=tree.repo)
+
+    message = wt.dispose(ghost)
+
+    assert "left in place" in message
+    assert "could not read its status" in message
+    # the real worktree this ghost points near was never touched
+    assert tree.path.is_dir()
+
+
+def test_dispose_with_force_removes_a_genuinely_dirty_worktree(repo_with_remote):
+    """The escape hatch still works: `force=True` removes real uncommitted work."""
+    tree = wt.create(repo_with_remote, slug="spec-alpha", story_id="1")
+    (tree.path / "unsaved.txt").write_text("discard me\n")
+
+    message = wt.dispose(tree, force=True)
+
+    assert "removed" in message
+    assert not tree.path.exists()
+
+
 def test_creating_over_an_existing_tree_refuses_rather_than_reusing(repo_with_remote):
     wt.create(repo_with_remote, slug="spec-alpha", story_id="1")
     with pytest.raises(FileExistsError):
