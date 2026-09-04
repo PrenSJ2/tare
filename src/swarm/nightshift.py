@@ -132,9 +132,34 @@ DENIED_TOOLS = (
 #
 # What that trade actually is, stated so nobody has to infer it: capability
 # went up, containment went sideways. The loop can now touch the filesystem
-# outside the repository and reach the network. What it cannot do is land
-# anything a human has not read, because nothing merges and every push is
-# confined to one namespace by git itself.
+# outside the repository and reach the network.
+#
+# WIDE_DENIED_TOOLS below is prefix-based and sits underneath a blanket `Bash`
+# grant, so it stops the named invocation, not the outcome: `gh pr merge` is
+# blocked, but `gh api repos/OWNER/REPO/pulls/N/merge -X PUT` reaches the same
+# endpoint under a different command string that no entry covers, and the
+# same gap defeats the other prefix denials -- `gh secret set`,
+# `gh repo edit --visibility public`, `gh workflow run` are all reachable the
+# same way. Do not read the deny list as "a story cannot merge, publish a
+# secret, or trigger a workflow" -- it cannot do those things BY THE NAMED
+# COMMAND, which is a narrower and weaker property.
+#
+# What IS actually enforced, and enforced by something other than this list:
+# WHERE a push can land. `swarm.worktree`'s pre-push hook rejects every ref
+# outside refs/heads/nightshift/*, at the git layer, regardless of which Bash
+# invocation tried to push it. That containment holds even though the deny
+# list above it does not.
+#
+# So "nothing merges" is not a property of this tool policy. It is a property
+# of the human who is supposed to read the PR before merging it. This module
+# cannot make that true; it can only make sure there is a PR, on a namespaced
+# branch, for a human to read.
+#
+# Unverified: whether a subagent spawned via the `Task` tool (granted below)
+# inherits this process's --allowedTools/--disallowedTools, or runs under
+# some default of its own. If it does not inherit them, the entire deny list
+# is bypassable by spawning one subagent. Not checked against the real CLI
+# yet -- next person to touch this, check it before relying on the list.
 WIDE_TOOLS = (
     "Read", "Glob", "Grep", "Write", "Edit", "TodoWrite", "Task", "Skill",
     "WebFetch", "WebSearch",

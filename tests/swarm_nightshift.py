@@ -917,13 +917,39 @@ def test_the_ledger_is_not_kept_among_disposable_captures(swarm_home):
 from swarm import bmad, worktree as wt
 
 
-def test_the_wide_policy_still_denies_merging():
-    """Nothing in this feature merges anything. A human reads the PR."""
+def test_the_narrow_policy_still_denies_merging():
+    """Nothing in session mode merges anything. A human reads the PR."""
     assert any("gh pr merge" in t for t in ns.DENIED_TOOLS)
 
 
-def test_the_wide_policy_still_denies_force_pushing():
+def test_the_narrow_policy_still_denies_force_pushing():
     assert any("push --force" in t or "push -f" in t for t in ns.DENIED_TOOLS)
+
+
+def test_the_wide_policy_still_denies_merging():
+    """Nothing in this feature merges anything. A human reads the PR."""
+    assert any("gh pr merge" in t for t in ns.WIDE_DENIED_TOOLS)
+
+
+def test_the_wide_policy_still_denies_force_pushing():
+    assert any("push --force" in t or "push -f" in t for t in ns.WIDE_DENIED_TOOLS)
+
+
+def test_the_wide_denylist_contents_are_pinned():
+    """Trimming an entry from WIDE_DENIED_TOOLS must fail a test, not just
+
+    reduce coverage silently. Asserted as an exact set so a future edit that
+    drops or renames an entry is caught here rather than discovered at 4am.
+    """
+    assert set(ns.WIDE_DENIED_TOOLS) == {
+        "Bash(gh pr merge:*)", "Bash(gh release:*)", "Bash(gh repo delete:*)",
+        "Bash(git push --force:*)", "Bash(git push -f:*)",
+        "Bash(git merge:*)", "Bash(git reset --hard:*)", "Bash(git clean:*)",
+        "Bash(git worktree remove:*)",
+        "Bash(npm publish:*)", "Bash(pnpm publish:*)",
+        "Bash(terraform:*)", "Bash(kubectl:*)", "Bash(docker push:*)",
+        "Bash(rm -rf:*)",
+    }
 
 
 def test_the_wide_policy_permits_what_it_was_widened_for():
@@ -980,3 +1006,21 @@ def test_the_dispatch_command_runs_in_the_worktree_and_names_the_skill(tmp_path)
     assert "spec-alpha" in prompt and "1" in prompt
     assert "--allowedTools" in argv
     assert argv[argv.index("--allowedTools") + 1] == ",".join(ns.WIDE_TOOLS)
+
+
+def test_the_dispatch_command_carries_the_whole_wide_denylist(tmp_path):
+    """A regression that dropped WIDE_DENIED_TOOLS from the command entirely
+
+    would not be caught by the allowedTools assertion above -- this checks
+    --disallowedTools directly, and checks every entry, not a sample.
+    """
+    story = bmad.Story(id="1", title="Add a limiter", description="D",
+                       spec_dir=tmp_path / "spec-alpha",
+                       invoke_dev_with="")
+    argv = ns.build_story_command(story, worktree_path=tmp_path / "wt")
+
+    assert "--disallowedTools" in argv
+    disallowed = argv[argv.index("--disallowedTools") + 1]
+    assert disallowed == ",".join(ns.WIDE_DENIED_TOOLS)
+    for entry in ns.WIDE_DENIED_TOOLS:
+        assert entry in disallowed.split(",")
