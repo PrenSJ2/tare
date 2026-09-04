@@ -63,7 +63,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time as clock_time
 from pathlib import Path
 
-from . import paths, reader
+from . import paths, reader, worktree as wt_module
 
 # Default night window, local time. Outside it, `start` refuses rather than
 # running -- "night automation" that fires at 2pm is just automation, and the
@@ -118,6 +118,48 @@ DENIED_TOOLS = (
     "Bash(git clean:*)", "Bash(gh:*)", "Bash(npm publish:*)",
     "Bash(pnpm publish:*)", "Bash(terraform:*)", "Bash(kubectl:*)",
     "Bash(docker push:*)", "Bash(rm -rf:*)",
+    "Bash(gh pr merge:*)", "Bash(git push --force:*)", "Bash(git push -f:*)",
+)
+
+# The widened policy, used in story mode only.
+#
+# The narrow ALLOWED_TOOLS above is still what `session` mode runs under, and
+# the comment on it still stands: an allowlist is fail-closed and it was the
+# only real control this module had. Story mode gives that up on purpose --
+# a story that cannot install a dependency or open a PR cannot be finished
+# unattended -- and replaces it with `swarm.worktree`: an isolated tree whose
+# pre-push hook rejects every ref outside refs/heads/nightshift/.
+#
+# What that trade actually is, stated so nobody has to infer it: capability
+# went up, containment went sideways. The loop can now touch the filesystem
+# outside the repository and reach the network. What it cannot do is land
+# anything a human has not read, because nothing merges and every push is
+# confined to one namespace by git itself.
+WIDE_TOOLS = (
+    "Read", "Glob", "Grep", "Write", "Edit", "TodoWrite", "Task", "Skill",
+    "WebFetch", "WebSearch",
+    "Bash",
+    "Bash(git push:*)", "Bash(gh pr create:*)",
+)
+
+# Denied even under the wide policy. These are not "dangerous commands" in
+# general -- they are the ones that reach PAST the boundary rather than
+# operating inside it, so no worktree makes them safe.
+#
+# Written out in full rather than as `DENIED_TOOLS + (...)`. That derivation
+# looks tidier and is wrong: DENIED_TOOLS carries `Bash(git push:*)`,
+# `Bash(gh:*)`, `WebFetch` and `WebSearch`, every one of which this mode
+# grants on purpose. Inheriting it would deny the push and the pull request
+# the whole feature exists to produce, and the failure would look like a
+# permissions prompt at 4am with nobody there to answer it.
+WIDE_DENIED_TOOLS = (
+    "Bash(gh pr merge:*)", "Bash(gh release:*)", "Bash(gh repo delete:*)",
+    "Bash(git push --force:*)", "Bash(git push -f:*)",
+    "Bash(git merge:*)", "Bash(git reset --hard:*)", "Bash(git clean:*)",
+    "Bash(git worktree remove:*)",
+    "Bash(npm publish:*)", "Bash(pnpm publish:*)",
+    "Bash(terraform:*)", "Bash(kubectl:*)", "Bash(docker push:*)",
+    "Bash(rm -rf:*)",
 )
 
 # Without this the whole feature is inert, which is not a guess: the first
@@ -659,6 +701,63 @@ def build_command(recommendation: str, *, repo: Path) -> list[str]:
         "--permission-mode", PERMISSION_MODE,
         "--allowedTools", ",".join(ALLOWED_TOOLS),
         "--disallowedTools", ",".join(DENIED_TOOLS),
+    ]
+
+
+# The preamble for story mode.
+#
+# CONTINUATION_PREAMBLE says "Do NOT push" and "Stay on the current branch".
+# Both are false here, and that matters more than it looks: a preamble that
+# contradicts the tool policy is a preamble the model learns to discount,
+# including the clauses that still hold. So this one states the boundary as it
+# actually is rather than as the old mode's was.
+STORY_PREAMBLE = f"""You are implementing ONE story from a BMAD plan, unattended. \
+Nobody is available to answer questions, so do not ask any -- if something is \
+ambiguous, take the smallest defensible option and say what you assumed.
+
+You are working inside a dedicated git worktree on a branch under \
+`{wt_module.ALLOWED_REF_PREFIX}`. Commit your work there. You may push that \
+branch and open a pull request for it.
+
+Hard constraints for this run:
+- Do NOT merge anything, and do NOT push any ref outside \
+{wt_module.ALLOWED_REF_PREFIX} -- a hook will refuse it and the refusal is a bug report.
+- Do NOT deploy, release, publish, or run migrations.
+- Do NOT touch credentials, secrets, .env files, or live payment configuration.
+- Run the project's tests and report the real result, including failures.
+
+Finish by returning the headless JSON contract and nothing after it:
+{{"status": "complete", "files": ["..."]}} or \
+{{"status": "blocked", "error_code": "...", "reason": "..."}}
+
+The story to implement:
+"""
+
+
+def build_story_command(story, *, worktree_path: Path) -> list[str]:
+    """One iteration: dispatch `bmad-build-auto` for a single story.
+
+    `invoke_dev_with` is appended verbatim, as its schema requires. It is also
+    the reason `screen()` must run over it first: it is free text from a file,
+    concatenated into a prompt, executing under the widest tool policy in the
+    system. See `run_shift`.
+    """
+    prompt = (
+        STORY_PREAMBLE
+        + f"\nSpec folder: {story.spec_dir}\n"
+        + f"Story id: {story.id}\n"
+        + f"Title: {story.title}\n\n"
+        + f"{story.description}\n\n"
+        + "Invoke the `bmad-build-auto` skill by name to implement exactly this "
+          "story, once.\n"
+        + (f"\nAdditional instructions carried with this story:\n{story.invoke_dev_with}\n"
+           if story.invoke_dev_with else "")
+    )
+    return [
+        "claude", "-p", prompt,
+        "--permission-mode", PERMISSION_MODE,
+        "--allowedTools", ",".join(WIDE_TOOLS),
+        "--disallowedTools", ",".join(WIDE_DENIED_TOOLS),
     ]
 
 

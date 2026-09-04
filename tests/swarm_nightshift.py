@@ -905,3 +905,78 @@ def test_the_ledger_is_not_kept_among_disposable_captures(swarm_home):
     from swarm import paths
     assert ns.ledger_path().parent == paths.state_dir()
     assert ns.ledger_path().parent != paths.runs_dir()
+
+
+# --- the widened policy -----------------------------------------------------
+#
+# The narrow allowlist was called "the only real control". It has been widened
+# by choice, and the worktree hook is what replaced it. These tests pin the
+# things that must stay denied even so -- the ones that reach past the
+# boundary rather than operating inside it.
+
+from swarm import bmad, worktree as wt
+
+
+def test_the_wide_policy_still_denies_merging():
+    """Nothing in this feature merges anything. A human reads the PR."""
+    assert any("gh pr merge" in t for t in ns.DENIED_TOOLS)
+
+
+def test_the_wide_policy_still_denies_force_pushing():
+    assert any("push --force" in t or "push -f" in t for t in ns.DENIED_TOOLS)
+
+
+def test_the_wide_policy_permits_what_it_was_widened_for():
+    joined = " ".join(ns.WIDE_TOOLS)
+    for capability in ("git push", "gh pr create", "Bash"):
+        assert capability in joined, f"{capability} missing from the widened policy"
+
+
+def test_the_wide_denylist_does_not_deny_what_the_wide_policy_grants():
+    """WIDE_DENIED_TOOLS must not be derived from DENIED_TOOLS.
+
+    DENIED_TOOLS carries `Bash(git push:*)` and `Bash(gh:*)` -- both of which
+    story mode grants deliberately. Inheriting them would deny the push and the
+    pull request this feature exists to produce, and the failure would surface
+    as a permission prompt at 4am with nobody there to answer it.
+    """
+    denied = " ".join(ns.WIDE_DENIED_TOOLS)
+    assert "Bash(git push:*)" not in ns.WIDE_DENIED_TOOLS
+    assert "Bash(gh:*)" not in ns.WIDE_DENIED_TOOLS
+    assert "WebFetch" not in denied and "WebSearch" not in denied
+    # ...while still denying the things that reach past the boundary.
+    assert "Bash(gh pr merge:*)" in ns.WIDE_DENIED_TOOLS
+
+
+def test_the_story_preamble_does_not_forbid_what_the_policy_now_allows():
+    """The old preamble says 'Do NOT push' and 'Stay on the current branch'.
+
+    Both are false in this mode, and a preamble that contradicts the tool
+    policy teaches the model to disregard the preamble -- including the parts
+    that still matter.
+    """
+    assert "Do NOT push" not in ns.STORY_PREAMBLE
+    assert "Stay on the current branch" not in ns.STORY_PREAMBLE
+    assert wt.ALLOWED_REF_PREFIX in ns.STORY_PREAMBLE
+
+
+def test_the_story_preamble_still_forbids_reaching_production():
+    lowered = ns.STORY_PREAMBLE.lower()
+    for forbidden in ("deploy", "migration", "credential", "merge"):
+        assert forbidden in lowered
+
+
+def test_the_dispatch_command_runs_in_the_worktree_and_names_the_skill(tmp_path):
+    story = bmad.Story(id="1", title="Add a limiter", description="D",
+                       spec_dir=tmp_path / "spec-alpha",
+                       invoke_dev_with="Use the existing Redis client.")
+    argv = ns.build_story_command(story, worktree_path=tmp_path / "wt")
+
+    assert argv[0] == "claude"
+    assert "-p" in argv
+    prompt = argv[argv.index("-p") + 1]
+    assert "bmad-build-auto" in prompt
+    assert "Use the existing Redis client." in prompt   # invoke_dev_with, verbatim
+    assert "spec-alpha" in prompt and "1" in prompt
+    assert "--allowedTools" in argv
+    assert argv[argv.index("--allowedTools") + 1] == ",".join(ns.WIDE_TOOLS)
