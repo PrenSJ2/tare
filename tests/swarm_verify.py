@@ -8,10 +8,6 @@ thing the queue was for.
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
-
 from swarm import bmad, verify
 
 
@@ -102,3 +98,14 @@ def test_a_huge_diff_is_truncated_and_says_so(tmp_path):
                                        diff="x" * 70000)
     prompt = argv[argv.index("-p") + 1]
     assert "diff truncated" in prompt
+
+
+def test_a_nonzero_exit_is_not_a_pass_even_with_valid_json(tmp_path):
+    """A non-zero exit with well-formed JSON must still come back unverified."""
+    class R:
+        returncode = 1
+        stdout = '{"verified": true, "reason": "x", "unmet": []}'
+
+    v = verify.check(_story(tmp_path), worktree_path=tmp_path, diff="", runner=lambda a: R())
+    assert v.verified is False
+    assert "exited with code 1" in v.reason

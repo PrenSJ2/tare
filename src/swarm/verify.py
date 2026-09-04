@@ -17,6 +17,19 @@ verified". The asymmetry is deliberate and cheap: an unverified story is still
 open and runs again tomorrow, costing one night. A story wrongly marked
 complete leaves the queue permanently, costing the thing the queue existed
 for.
+
+## What this verdict is not
+
+This verdict is one more model's opinion, not a proof. A verifier can be wrong
+in both directions: false "no" (unmet actually holds) costs one night; false
+"yes" (unmet actually fails) costs the queue forever. The design answers this
+with the asymmetry, not with certainty.
+
+## Residual risk
+
+The prompt asks for the JSON and nothing else. A verifier that echoes the
+schema after concluding would result in last-match-wins selecting a stale
+schema over the real verdict. This is considered rather than missed.
 """
 
 from __future__ import annotations
@@ -92,7 +105,6 @@ def build_verify_command(story: Story, *, worktree_path: Path, diff: str) -> lis
     )
     return [
         "claude", "-p", prompt,
-        "--permission-mode", "acceptEdits",
         "--allowedTools", ",".join(VERIFY_TOOLS),
     ]
 
@@ -132,4 +144,11 @@ def check(story: Story, *, worktree_path: Path, diff: str,
         return Verdict(verified=False, reason=f"verification timed out after {timeout_minutes}m")
     except OSError as exc:
         return Verdict(verified=False, reason=f"verification could not run: {exc}")
+    # Non-zero exit is a third failure signal beside timeout and OSError. It is
+    # the only one that still produces output, which is why it was easy to miss:
+    # a rate limit or API error after the model emits JSON, a post-response
+    # bookkeeping failure, still leaves parseable stdout. But it is still a
+    # failure and must not be treated as a pass.
+    if result.returncode != 0:
+        return Verdict(verified=False, reason=f"verification exited with code {result.returncode}")
     return parse_verdict(result.stdout or "")
