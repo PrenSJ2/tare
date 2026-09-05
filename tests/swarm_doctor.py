@@ -307,3 +307,170 @@ def test_partial_pairing_states_the_total_is_unknown(swarm_home):
     text = doctor.render(doctor.inspect(path))
     assert "1 of 2" in text
     assert "unknown" in text
+
+
+# --- BMAD drift -------------------------------------------------------------
+#
+# Their layout is our API. Issue #1785 and #1002 show BMAD's own templates
+# drifting from BMAD's own validators, so ours will drift too. The rule is
+# that drift is reported AS DRIFT: an empty queue and a queue we can no longer
+# read must never look the same.
+
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from swarm import doctor as doc
+
+
+def _bmad_files(repo: Path, stories_yaml: str, slug="spec-alpha"):
+    cfg = repo / "_bmad" / "bmm"
+    cfg.mkdir(parents=True, exist_ok=True)
+    (cfg / "config.yaml").write_text("project_name: demo\n")
+    d = repo / "_bmad-output" / "specs" / slug
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SPEC.md").write_text("# spec\n")
+    (d / "stories.yaml").write_text(stories_yaml)
+
+
+def _git_repo(repo: Path):
+    """A minimal real git repository, built the same way every other test in
+    this plan builds one (see tests/swarm_worktree.py, tests/swarm_nightshift.py).
+
+    `swarm doctor` and `worktree.orphans` both assume they are running
+    inside a real repository -- a bare directory is not a "healthy install",
+    it is a nonsense input, and asserting otherwise was the bug in the
+    original fixture here.
+    """
+    repo.mkdir(parents=True, exist_ok=True)
+    for args in (["init", "-q", "-b", "feature/x"],
+                 ["config", "user.email", "t@example.com"],
+                 ["config", "user.name", "T"]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True)
+    (repo / "f.txt").write_text("x\n")
+    subprocess.run(["git", "-C", str(repo), "add", "f.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "i"], check=True)
+
+
+def _install(repo: Path, stories_yaml: str, slug="spec-alpha"):
+    if not (repo / ".git").exists():
+        _git_repo(repo)
+    _bmad_files(repo, stories_yaml, slug=slug)
+
+
+def test_a_healthy_install_reports_ok(tmp_path):
+    _install(tmp_path, '- id: "1"\n  title: T\n  description: D\n')
+    levels = [lvl for lvl, _ in doc.check_bmad(tmp_path)]
+    assert "fail" not in levels
+
+
+def test_a_missing_install_is_reported_not_silently_empty(tmp_path):
+    findings = doc.check_bmad(tmp_path)
+    assert any(lvl == "warn" and "no BMAD install" in msg for lvl, msg in findings)
+
+
+def test_no_spec_folder_is_reported_not_silently_empty(tmp_path):
+    """Distinct from a missing install: BMAD is here and config.yaml reads
+    fine, there is just nothing under `_bmad-output/specs` yet."""
+    _git_repo(tmp_path)
+    cfg = tmp_path / "_bmad" / "bmm"
+    cfg.mkdir(parents=True)
+    (cfg / "config.yaml").write_text("project_name: demo\n")
+
+    findings = doc.check_bmad(tmp_path)
+    assert any(lvl == "warn" and "no spec folder" in msg for lvl, msg in findings)
+
+
+def test_a_malformed_config_yaml_is_a_finding_not_a_crash(tmp_path):
+    """`spec_folders` reads and parses config.yaml before it can find
+    anything else. A hand-edited file with a YAML syntax error is exactly
+    the kind of drift this function exists to name -- it must come back as
+    a "fail" finding, not an uncaught BmadFormatError that takes the whole
+    `doctor` report down with it."""
+    _git_repo(tmp_path)
+    cfg = tmp_path / "_bmad" / "bmm"
+    cfg.mkdir(parents=True)
+    (cfg / "config.yaml").write_text("project_name: [unterminated\n")
+
+    findings = doc.check_bmad(tmp_path)  # must not raise
+    assert any(lvl == "fail" and "config.yaml" in msg for lvl, msg in findings)
+
+
+def test_an_unreadable_stories_file_is_a_finding_not_a_crash(tmp_path):
+    """A `stories.yaml` that exists (so it passed `spec_folders`'
+    `is_file()` check) but cannot be opened -- a permissions problem, most
+    likely -- must not raise PermissionError out of `check_bmad`."""
+    if os.geteuid() == 0:
+        pytest.skip("running as root can read anything")
+
+    _install(tmp_path, '- id: "1"\n  title: T\n  description: D\n')
+    story_file = tmp_path / "_bmad-output" / "specs" / "spec-alpha" / "stories.yaml"
+    os.chmod(story_file, 0o000)
+    try:
+        findings = doc.check_bmad(tmp_path)  # must not raise
+    finally:
+        os.chmod(story_file, 0o644)
+
+    assert any(lvl == "fail" and "spec-alpha" in msg for lvl, msg in findings)
+
+
+def test_an_unreadable_stories_file_names_the_rule_it_broke(tmp_path):
+    _install(tmp_path, "- id: 1\n  title: T\n  description: D\n")
+    findings = doc.check_bmad(tmp_path)
+    assert any(lvl == "fail" and "rule 4" in msg for lvl, msg in findings)
+
+
+def test_a_planned_but_unbroken_down_spec_is_reported(tmp_path):
+    _install(tmp_path, '- id: "1"\n  title: T\n  description: D\n')
+    lonely = tmp_path / "_bmad-output" / "specs" / "spec-planned"
+    lonely.mkdir(parents=True)
+    (lonely / "SPEC.md").write_text("# planned only\n")
+    findings = doc.check_bmad(tmp_path)
+    assert any("spec-planned" in msg for _, msg in findings)
+
+
+def test_an_orphaned_worktree_is_reported(tmp_path):
+    from swarm import worktree as wt
+
+    repo = tmp_path / "work"
+    _install(repo, '- id: "1"\n  title: T\n  description: D\n')
+    wt.create(repo, slug="spec-alpha", story_id="1")
+
+    findings = doc.check_bmad(repo)
+    assert any("orphaned worktree" in msg for _, msg in findings)
+
+
+def test_not_a_git_repository_is_reported_plainly(tmp_path):
+    """`swarm doctor` (and the queue itself) only ever runs inside a real
+    repository. Outside one, `git worktree list` fails with git's own
+    "fatal: not a git repository ..." -- a message naming a file (`.git`)
+    most operators have never had to think about. `check_bmad` must turn
+    that into a plain sentence, not relay git's stderr verbatim.
+    """
+    _bmad_files(tmp_path, '- id: "1"\n  title: T\n  description: D\n')
+
+    findings = doc.check_bmad(tmp_path)
+    assert any(lvl == "fail" and "not a git repository" in msg for lvl, msg in findings)
+    assert not any("fatal:" in msg.lower() for _, msg in findings)
+
+
+def test_a_git_worktree_list_failure_is_a_finding_not_an_empty_queue(tmp_path, monkeypatch):
+    """`worktree.orphans` now raises `RuntimeError` when `git worktree list`
+    itself fails, precisely so an empty result is never mistaken for "no
+    orphans". `check_bmad` must not let that exception escape, and must not
+    swallow it into a report that reads as clean -- it must appear as a
+    "fail" finding.
+    """
+    from swarm import worktree as wt
+
+    _install(tmp_path, '- id: "1"\n  title: T\n  description: D\n')
+
+    def _boom(repo):
+        raise RuntimeError("could not list worktrees for demo (git exploded)")
+
+    monkeypatch.setattr(wt, "orphans", _boom)
+
+    findings = doc.check_bmad(tmp_path)
+    assert any(lvl == "fail" and "git exploded" in msg for lvl, msg in findings)

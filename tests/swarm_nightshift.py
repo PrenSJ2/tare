@@ -12,6 +12,7 @@ from datetime import datetime, time as clock_time, timedelta
 import pytest
 
 from swarm import nightshift as ns
+from swarm import worktree as wt
 
 
 def _watched(home, session="s1", text="Next steps\n- Add a test for the parser\n"):
@@ -50,6 +51,321 @@ def test_the_gate_refuses_anything_touching_production(text):
     verdict = ns.screen(text)
     assert not verdict.ok, f"should have refused: {text}"
     assert verdict.matched, "a refusal must name the phrase that caused it"
+
+
+@pytest.mark.parametrize("text", [
+    # A real, measured false refusal (see the module comment): a Dart
+    # refactor, described after the fact, not an instruction to run one.
+    "the first migration is in",
+    # Base-form-only matching already excludes the past tense on its own --
+    # "rotate" does not match "rotated" -- and this proves it still holds now
+    # that the pattern tolerates intervening words.
+    "we rotated the key last week",
+    # ".env" sits in tier 2 precisely so this sentence is not a refusal.
+    "the .env is documented in the README",
+])
+def test_the_production_check_does_not_fire_on_past_tense_description(text):
+    """Isolates the tier-2 matcher itself from `names_an_action`.
+
+    Every one of these also fails `screen()` outright, correctly, for an
+    unrelated reason: none of them names work to do (see
+    `test_status_prose_is_refused_however_long_it_is`). That is not the
+    property being tested here -- the property is that `_production_hit`
+    does not mistake the description for an instruction, which is what the
+    two-tier design is for and what regresses if `migration`, `rotate`, or
+    `.env` are ever matched bare instead of via their forward-looking shape.
+    """
+    assert ns._production_hit(text.lower()) is None, text
+
+
+@pytest.mark.parametrize("text", [
+    # The opener is "run", which IS in the migration verb list -- this proves
+    # the guard is the right-hand modifier check, not merely that "record" or
+    # "document" happen to be absent from any list.
+    "Run the migration guide updates before merging",
+    # The opener is "replace", which IS in the credential verb list -- proves
+    # the object (an on-call schedule, not a secret) is what saves it.
+    "Replace the on-call schedule for next week",
+    # The opener is "update", which IS in the .env verb list -- proves the
+    # missing value word (not the verb's absence) is what saves it.
+    "Update the .env file documentation in the wiki",
+])
+def test_a_listed_verb_with_a_harmless_object_still_passes(text):
+    """A reviewer flagged an earlier version of this test: its openers
+    ("Record", "Document") sat outside all three tier-2 verb lists, so it
+    proved only that those two words weren't listed, and would have passed
+    under any widening of the patterns. These openers are drawn FROM the
+    lists the fixes added to, paired with an object the right-hand guard (for
+    migration) or the missing value word (for credentials and `.env`) must
+    still recognise as harmless.
+
+    "Rotate the on-call schedule" was the original third case here and had to
+    be dropped: `rotate` is no longer in `_ACTION_STEMS` (see
+    `test_a_verb_placed_away_from_line_start_does_not_gain_dispatch` for why),
+    so it now fails the unrelated actionability check instead of proving
+    anything about the credential pattern. `replace` covers the same point
+    without that collision.
+    """
+    verdict = ns.screen(text)
+    assert verdict.ok, f"should have allowed: {text} ({verdict.reason})"
+
+
+@pytest.mark.parametrize("text", [
+    "Run migrations against the staging database first",
+    "Kick off the pending migrations before the release",
+    "Rotate our production credential immediately",
+    "Update the production .env with new secrets",
+    # Added verbs beyond rotate/revoke: taking an old credential OUT of use
+    # isn't the only dangerous direction -- putting a new one in is too.
+    "Replace the leaked production API key with a fresh one",
+    # The value word sits BEFORE `.env` here, not after -- the other half of
+    # the two-sided .env check.
+    "Write the new production credentials into the .env file",
+    # Path-qualified: `_FEW_WORDS` cannot cross the `/` in `backend/.env`, so
+    # this used to reach neither .env pattern at all.
+    "Update backend/.env with the live Stripe key",
+    "Update config/.env with the live Stripe key",
+    "Edit ~/.env and drop the live key in",
+    # `.env.production`/`.env.local` are real secret files, not templates.
+    # A first version of the `.env.example`/`.sample`/`.template` exclusion
+    # left `.production`/`.local` unconsumed rather than rejected, which
+    # silently broke the mandatory whitespace check right after the token and
+    # stopped these two from blocking at all. See `_ENV_TOKEN`.
+    "Update the .env.production with the live key",
+    "Update .env.local with the live Stripe secret",
+    # Bare-imperative, story-title-shaped instructions where "and" joins two
+    # OBJECTS of the same verb ("the dump and the migrations"), not two
+    # clauses. Closing the false refusal this shape used to cause (excluding
+    # "and" from the budget) turned these into false PASSES instead, which is
+    # why that exclusion was reverted -- see the `_FEW_WORDS` comment. These
+    # two are the reason it had to be.
+    "Run the dump and the migrations tonight",
+    "Run the backfill and the migrations against prod",
+])
+def test_the_gate_refuses_the_forward_looking_shape_with_words_between(text):
+    """The fixed patterns tolerate a FEW intervening words and a path prefix,
+    not any number of either -- proven separately by
+    `test_the_production_check_does_not_fire_on_past_tense_description` and
+    `test_a_listed_verb_with_a_harmless_object_still_passes`.
+    """
+    verdict = ns.screen(text)
+    assert not verdict.ok, f"should have refused: {text}"
+    assert verdict.matched, "a refusal must name the phrase that caused it"
+    assert "\n" not in verdict.matched, "a ledger line must not carry a newline"
+
+
+@pytest.mark.parametrize("text", [
+    "Do the deploy tonight",
+    "Start the deploy when the tests are green",
+    "Perform the deploy after the smoke tests",
+    "Start pushing to main",
+    # The literal instruction `screen()`'s own docstring says must never be
+    # given ("'carry on with whatever you like' is precisely the instruction
+    # this must never give").
+    "Do whatever you think is best",
+    "Do it however you like",
+])
+def test_a_verb_placed_away_from_line_start_does_not_gain_dispatch(text):
+    """A regression guard for a hole opened and closed in the same round.
+
+    `do`/`start`/`perform`/`rotate` were added to `_ACTION_STEMS` to make a
+    false-refusal corpus pass end to end, then reverted once a reviewer
+    showed the cost: `Do`/`Start`/`Perform` displace the real production verb
+    out of line-start position, which is exactly where tier 2's
+    forward-looking check requires it to sit to be caught by
+    `_production_hit` -- so these openers both shield a production verb from
+    the production check AND, with the addition in place, satisfied the
+    actionability check anyway, making every sentence here dispatchable.
+    Reverting the addition restores the (accidental, but load-bearing)
+    protection: an opener `names_an_action` does not recognise still ends in
+    "names no action to carry out", regardless of what `_production_hit`
+    does or doesn't catch.
+    """
+    verdict = ns.screen(text)
+    assert not verdict.ok, f"should have refused: {text}"
+
+
+# --- the false-refusal corpus -----------------------------------------------
+#
+# A code review of the first version of these fixes ran a 36-sentence corpus
+# through `screen()` and found 19 wrongly refused -- several of them the
+# exact sentences the two-tier design exists to protect. A second review ran
+# an independent, UNSEEN 50-sentence corpus and found the fix had moved
+# nothing on sentences it wasn't fitted to (9 wrongly refused out of the
+# 25-sentence must-pass half, both before and after) -- the flat number is
+# the important part: it is the reason this file does not claim the
+# false-refusal rate went to zero in general, only that it went to zero ON
+# THE SENTENCES QUOTED BY NAME ACROSS ALL REVIEWS, which is what is
+# reconstructed below. A THIRD review, of that round's fixes, found two of
+# them individually made things worse on unseen prose (see the `_FEW_WORDS`
+# and `_ENV_TOKEN`/`_ENV_VALUE` comments for what was reverted and why), so
+# this corpus also carries the sentences that exposed those regressions.
+# See the module comment beside `_PRODUCTION_VERBS` for what the whole
+# exercise is worth and is not worth. See the task report for the full
+# before/after count.
+#
+# Some of these sentences open with a verb `_ACTION_STEMS` does not
+# recognise ("Do", "Start", "Perform") -- on purpose, per
+# `test_a_verb_placed_away_from_line_start_does_not_gain_dispatch` above.
+# Widening that list to make them pass `screen()` end to end was tried and
+# reverted for exactly the reason that test guards. So those sentences are
+# tested against `_production_hit` directly instead, in their own list below,
+# proving the production MATCHER handles them correctly without also
+# claiming they are (or should be) dispatchable instructions.
+
+_MIGRATION_FALSE_REFUSALS = [
+    # "migration"/"migrations" as an attributive modifier of something else --
+    # a test suite, a doc, a naming convention -- not the object of the verb.
+    "Run the migrations module tests",
+    "Run the migration test fixtures through the new parser",
+    "Apply the migration naming convention to the older files",
+]
+_MIGRATION_FALSE_REFUSALS_MATCHER_ONLY = [
+    # Same shape, opener not in `_ACTION_STEMS` on purpose -- see above.
+    "Do the migration docs review before the release notes",
+    "Start the migration guide rewrite",
+    "Perform the migration audit and write it up",
+]
+
+_ENV_FALSE_REFUSALS = [
+    # `add`/`write`/`update` are how you write ABOUT `.env`, not TO it. The
+    # gitignore case is the sharpest: it is the protective action, and the
+    # old verb list refused the thing that prevents the leak.
+    "add .env to .gitignore",
+    "Add .env and .env.local to .gitignore",
+    "Add the .env note to the README",
+    "Write the .env section of the setup guide",
+    # A committed placeholder file, not a secret -- editing one is routine.
+    "Update the .env.example with the two new vars",
+]
+
+_ENV_CROSS_CLAUSE_FALSE_REFUSALS = [
+    # An uncapped `.env`-to-value reach (tried, then reverted, to catch
+    # "Update the .env so the app talks to the live database" -- see
+    # `test_a_documented_accepted_false_pass` below) let an unrelated value
+    # word anywhere later in the same clause manufacture a match. These three
+    # are ordinary documentation/changelog work that got caught by that.
+    "Update the changelog and remind people that the .env has a database url",
+    "Update the docs so the reader knows the .env is not the live database",
+    "Add a paragraph to the onboarding page about how the .env supplies the database",
+]
+
+_CLAUSE_BRIDGE_FALSE_REFUSALS = [
+    # A verb governs an unrelated noun three words later, across a
+    # punctuation mark that must stop the bridge on its own.
+    "Run the linter, the migration is already in",
+    "Update the README; the .env is documented there",
+]
+
+_STORY_BLOB_FALSE_REFUSALS = [
+    # `run_story_shift` screens `f"{title}\n{description}\n{invoke_dev_with}"`
+    # as one blob (nightshift.py:1427). A verb in the TITLE used to reach into
+    # the DESCRIPTION across the joining newline, because `_FEW_WORDS` used
+    # `\s`, which treats a newline exactly like a space.
+    "Run the auth refactor\nMigrations are already applied on staging",
+    "Update the docs\nDotenv handling is described in config.py.",
+]
+
+_SCREENABLE_CORPUS = (
+    _MIGRATION_FALSE_REFUSALS + _ENV_FALSE_REFUSALS + _ENV_CROSS_CLAUSE_FALSE_REFUSALS
+    + _CLAUSE_BRIDGE_FALSE_REFUSALS + _STORY_BLOB_FALSE_REFUSALS
+)
+_MATCHER_ONLY_CORPUS = _MIGRATION_FALSE_REFUSALS_MATCHER_ONLY
+
+
+@pytest.mark.parametrize("text", _SCREENABLE_CORPUS)
+def test_the_false_refusal_corpus_now_passes(text):
+    verdict = ns.screen(text)
+    assert verdict.ok, f"should have allowed: {text} ({verdict.reason})"
+
+
+@pytest.mark.parametrize("text", _MATCHER_ONLY_CORPUS)
+def test_the_false_refusal_corpus_matcher_only(text):
+    """The other half of the corpus: sentences the production matcher must
+    clear, whose opener `names_an_action` correctly refuses for an unrelated
+    reason (see `test_a_verb_placed_away_from_line_start_does_not_gain_dispatch`).
+    Asserted against `_production_hit` directly rather than `screen()`, so
+    this test cannot be made to pass by widening `_ACTION_STEMS` again.
+    """
+    assert ns._production_hit(text.lower()) is None, text
+
+
+def test_the_false_refusal_corpus_refusal_rate():
+    """The measurement the fix is actually for, not just a pass/fail list.
+
+    Kept as its own test (rather than folding into the parametrized ones
+    above) so a regression shows up as a count, which is what was asked for
+    -- and so CI prints the rate even if every individual case also has its
+    own assertion elsewhere. Covers both halves of the corpus, checked the
+    way each half is meant to be checked. Deliberately does NOT include
+    `_ACCEPTED_FALSE_REFUSALS`/`_ACCEPTED_FALSE_REFUSALS_MATCHER_ONLY` or the
+    sentence in `test_a_documented_accepted_false_pass` below -- those are
+    documented costs, not bugs, and folding them in here would make this
+    assertion fail by design.
+    """
+    screenable_refused = [t for t in _SCREENABLE_CORPUS if not ns.screen(t).ok]
+    matcher_hits = [t for t in _MATCHER_ONLY_CORPUS if ns._production_hit(t.lower())]
+    refused = screenable_refused + matcher_hits
+    total = len(_SCREENABLE_CORPUS) + len(_MATCHER_ONLY_CORPUS)
+    assert refused == [], (
+        f"{len(refused)}/{total} descriptive sentences wrongly refused: {refused}")
+
+
+# --- accepted costs, not bugs ------------------------------------------------
+#
+# Two tradeoffs made on purpose, in the last round of fixes, in favor of the
+# worse-sounding but cheaper failure mode. Both are asserted here so they are
+# MONITORED -- a future change that flips either of these is worth noticing,
+# even though the current state is the intended one, not a regression to
+# chase back to zero.
+
+_ACCEPTED_FALSE_REFUSALS = [
+    # Excluding "and"/"then"/"so" from the migration/credential budget closed
+    # these, and was reverted because it also turned "Run the dump and the
+    # migrations tonight" into a false PASS (see the `_FEW_WORDS` comment and
+    # `test_the_gate_refuses_the_forward_looking_shape_with_words_between`).
+    # A false refusal costs one night; that false pass costs a database.
+    "Run the tests and the migration is already applied",
+    "Run the linter and the migrations are fine",
+]
+_ACCEPTED_FALSE_REFUSALS_MATCHER_ONLY = [
+    "Perform the audit and confirm migrations are current",
+]
+
+
+@pytest.mark.parametrize("text", _ACCEPTED_FALSE_REFUSALS)
+def test_documented_accepted_false_refusals_from_the_conjunction_revert(text):
+    verdict = ns.screen(text)
+    assert not verdict.ok, (
+        f"{text!r} was expected to still be a documented false refusal -- if this "
+        "now passes, `_FEW_WORDS` likely regained a conjunction exclusion; check "
+        "it did not also reopen the false passes it was reverted for")
+
+
+@pytest.mark.parametrize("text", _ACCEPTED_FALSE_REFUSALS_MATCHER_ONLY)
+def test_documented_accepted_false_refusals_matcher_only(text):
+    assert ns._production_hit(text.lower()) is not None, text
+
+
+def test_a_documented_accepted_false_pass():
+    """`.env`'s reach is capped at the same width as migration/credential, and
+    "so the app talks to the" is 6 words -- past the cap. An uncapped version
+    caught this one, but caused the `_ENV_CROSS_CLAUSE_FALSE_REFUSALS`
+    regression above -- and that regression needed BOTH the uncap and the
+    widened `_ENV_VALUE` vocabulary together, not either alone (see the
+    `_ENV_VERBS` comment in the source for the comparisons that showed this).
+    The right-hand guard added alongside the revert (`_ENV_TOKEN`) closes the
+    adjacent "the .env PARSER/HANDLING/..." shape but does not reach this far.
+    Left passing on purpose: a bounded pattern with one named gap is a better
+    trade than an unbounded one that refuses ordinary documentation and
+    changelog work.
+    """
+    verdict = ns.screen("Update the .env so the app talks to the live database")
+    assert verdict.ok, (
+        "expected this to still be a documented false pass -- if it is now "
+        "refused, check what changed and whether it reopened the cross-clause "
+        "false refusals this was traded against"
+    )
 
 
 @pytest.mark.parametrize("text", [
@@ -905,3 +1221,1116 @@ def test_the_ledger_is_not_kept_among_disposable_captures(swarm_home):
     from swarm import paths
     assert ns.ledger_path().parent == paths.state_dir()
     assert ns.ledger_path().parent != paths.runs_dir()
+
+
+# --- the widened policy -----------------------------------------------------
+#
+# The narrow allowlist was called "the only real control". It has been widened
+# by choice, and the worktree hook is what replaced it. These tests pin the
+# things that must stay denied even so -- the ones that reach past the
+# boundary rather than operating inside it.
+
+from swarm import bmad, worktree as wt
+
+
+def test_the_narrow_policy_still_denies_merging():
+    """Nothing in session mode merges anything. A human reads the PR."""
+    assert any("gh pr merge" in t for t in ns.DENIED_TOOLS)
+
+
+def test_the_narrow_policy_still_denies_force_pushing():
+    assert any("push --force" in t or "push -f" in t for t in ns.DENIED_TOOLS)
+
+
+def test_the_wide_policy_still_denies_merging():
+    """Nothing in this feature merges anything. A human reads the PR."""
+    assert any("gh pr merge" in t for t in ns.WIDE_DENIED_TOOLS)
+
+
+def test_the_wide_policy_still_denies_force_pushing():
+    assert any("push --force" in t or "push -f" in t for t in ns.WIDE_DENIED_TOOLS)
+
+
+def test_the_wide_denylist_contents_are_pinned():
+    """Trimming an entry from WIDE_DENIED_TOOLS must fail a test, not just
+
+    reduce coverage silently. Asserted as an exact set so a future edit that
+    drops or renames an entry is caught here rather than discovered at 4am.
+    """
+    assert set(ns.WIDE_DENIED_TOOLS) == {
+        "Bash(gh pr merge:*)", "Bash(gh release:*)", "Bash(gh repo delete:*)",
+        "Bash(git push --force:*)", "Bash(git push -f:*)",
+        "Bash(git merge:*)", "Bash(git reset --hard:*)", "Bash(git clean:*)",
+        "Bash(git worktree remove:*)",
+        "Bash(npm publish:*)", "Bash(pnpm publish:*)",
+        "Bash(terraform:*)", "Bash(kubectl:*)", "Bash(docker push:*)",
+        "Bash(rm -rf:*)",
+    }
+
+
+def test_the_wide_policy_permits_what_it_was_widened_for():
+    joined = " ".join(ns.WIDE_TOOLS)
+    for capability in ("git push", "gh pr create", "Bash"):
+        assert capability in joined, f"{capability} missing from the widened policy"
+
+
+def test_task_is_not_in_the_wide_policy():
+    """Whether a Task-spawned subagent inherits the parent's
+    --allowedTools/--disallowedTools is unverified against the real CLI. An
+    unverified safety assumption is not a control, so `Task` stays out until
+    that inheritance question is settled -- a story implementation does not
+    need to spawn subagents, and this regression guard is what stops it
+    quietly coming back."""
+    assert "Task" not in ns.WIDE_TOOLS
+
+
+def test_the_wide_denylist_does_not_deny_what_the_wide_policy_grants():
+    """WIDE_DENIED_TOOLS must not be derived from DENIED_TOOLS.
+
+    DENIED_TOOLS carries `Bash(git push:*)` and `Bash(gh:*)` -- both of which
+    story mode grants deliberately. Inheriting them would deny the push and the
+    pull request this feature exists to produce, and the failure would surface
+    as a permission prompt at 4am with nobody there to answer it.
+    """
+    denied = " ".join(ns.WIDE_DENIED_TOOLS)
+    assert "Bash(git push:*)" not in ns.WIDE_DENIED_TOOLS
+    assert "Bash(gh:*)" not in ns.WIDE_DENIED_TOOLS
+    assert "WebFetch" not in denied and "WebSearch" not in denied
+    # ...while still denying the things that reach past the boundary.
+    assert "Bash(gh pr merge:*)" in ns.WIDE_DENIED_TOOLS
+
+
+def test_the_story_preamble_does_not_forbid_what_the_policy_now_allows():
+    """The old preamble says 'Do NOT push' and 'Stay on the current branch'.
+
+    Both are false in this mode, and a preamble that contradicts the tool
+    policy teaches the model to disregard the preamble -- including the parts
+    that still matter.
+    """
+    assert "Do NOT push" not in ns.STORY_PREAMBLE
+    assert "Stay on the current branch" not in ns.STORY_PREAMBLE
+    assert wt.ALLOWED_REF_PREFIX in ns.STORY_PREAMBLE
+
+
+def test_the_story_preamble_still_forbids_reaching_production():
+    lowered = ns.STORY_PREAMBLE.lower()
+    for forbidden in ("deploy", "migration", "credential", "merge"):
+        assert forbidden in lowered
+
+
+def test_the_dispatch_command_runs_in_the_worktree_and_names_the_skill(tmp_path):
+    story = bmad.Story(id="1", title="Add a limiter", description="D",
+                       spec_dir=tmp_path / "spec-alpha",
+                       invoke_dev_with="Use the existing Redis client.")
+    argv = ns.build_story_command(story, worktree_path=tmp_path / "wt")
+
+    assert argv[0] == "claude"
+    assert "-p" in argv
+    prompt = argv[argv.index("-p") + 1]
+    assert "bmad-build-auto" in prompt
+    assert "Use the existing Redis client." in prompt   # invoke_dev_with, verbatim
+    assert "spec-alpha" in prompt and "1" in prompt
+    assert "--allowedTools" in argv
+    assert argv[argv.index("--allowedTools") + 1] == ",".join(ns.WIDE_TOOLS)
+
+
+def test_the_dispatch_command_carries_the_whole_wide_denylist(tmp_path):
+    """A regression that dropped WIDE_DENIED_TOOLS from the command entirely
+
+    would not be caught by the allowedTools assertion above -- this checks
+    --disallowedTools directly, and checks every entry, not a sample.
+    """
+    story = bmad.Story(id="1", title="Add a limiter", description="D",
+                       spec_dir=tmp_path / "spec-alpha",
+                       invoke_dev_with="")
+    argv = ns.build_story_command(story, worktree_path=tmp_path / "wt")
+
+    assert "--disallowedTools" in argv
+    disallowed = argv[argv.index("--disallowedTools") + 1]
+    assert disallowed == ",".join(ns.WIDE_DENIED_TOOLS)
+    for entry in ns.WIDE_DENIED_TOOLS:
+        assert entry in disallowed.split(",")
+
+
+# --- the headless contract --------------------------------------------------
+
+def test_a_complete_outcome_is_read_from_the_contract():
+    out = ns.parse_outcome('blah blah\n{"status": "complete", "files": ["a.py", "b.py"]}\n')
+    assert out.status == "complete"
+    assert out.files == ["a.py", "b.py"]
+
+
+def test_a_blocked_outcome_carries_its_code_and_reason():
+    out = ns.parse_outcome('{"status": "blocked", "error_code": "insufficient_intent", '
+                           '"reason": "too thin to distill"}')
+    assert out.status == "blocked"
+    assert out.error_code == "insufficient_intent"
+    assert "too thin" in out.reason
+
+
+def test_the_last_contract_object_wins_over_an_earlier_one():
+    """The model may print an example of the contract before returning one."""
+    out = ns.parse_outcome('{"status": "blocked", "error_code": "x", "reason": "y"}\n'
+                           'actually, on reflection:\n'
+                           '{"status": "complete", "files": ["z.py"]}')
+    assert out.status == "complete"
+
+
+def test_narration_instead_of_a_contract_is_blocked_not_success():
+    """This WILL happen. Inferring success from a zero exit code is precisely
+    the inference the whole design exists to delete."""
+    out = ns.parse_outcome("I've finished the story and everything passes!")
+    assert out.status == "blocked"
+    assert out.error_code == "no_contract"
+    assert "everything passes" in out.raw_tail
+
+
+def test_an_unrelated_json_object_is_not_mistaken_for_the_contract():
+    out = ns.parse_outcome('{"files": ["a.py"], "note": "not the contract"}')
+    assert out.status == "blocked"
+    assert out.error_code == "no_contract"
+
+
+def test_empty_output_is_blocked():
+    assert ns.parse_outcome("").error_code == "no_contract"
+
+
+# --- story mode -------------------------------------------------------------
+
+def _bmad_repo(tmp_path, stories_yaml, slug="spec-alpha"):
+    """A real git repo with a BMAD install in it. Real git, because worktree
+    creation is not something a mock can tell you the truth about."""
+    import subprocess
+    repo = tmp_path / "work"
+    repo.mkdir()
+    for args in (["init", "-q", "-b", "feature/x"],
+                 ["config", "user.email", "t@example.com"],
+                 ["config", "user.name", "T"]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True)
+    (repo / "README.md").write_text("hi\n")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True)
+
+    cfg = repo / "_bmad" / "bmm"
+    cfg.mkdir(parents=True)
+    (cfg / "config.yaml").write_text("project_name: demo\n")
+    d = repo / "_bmad-output" / "specs" / slug
+    d.mkdir(parents=True)
+    (d / "SPEC.md").write_text("# spec\n")
+    (d / "stories.yaml").write_text(stories_yaml)
+    return repo
+
+
+ONE_STORY = '- id: "1"\n  title: Add a limiter\n  description: Return 429 on breach.\n'
+
+
+def test_a_dry_run_shows_the_story_it_would_take_and_dispatches_nothing(swarm_home, tmp_path):
+    repo = _bmad_repo(tmp_path, ONE_STORY)
+    events = []
+    shift = ns.run_story_shift(repo, apply=False, on_event=events.append)
+
+    assert "dry run" in shift.ended
+    assert any("Add a limiter" in e for e in events)
+    assert wt.orphans(repo) == [], "a dry run must not create a worktree"
+
+
+def test_a_story_naming_production_work_is_parked_and_the_loop_continues(swarm_home, tmp_path):
+    """Refusal is no longer terminal -- it parks the story and moves on."""
+    repo = _bmad_repo(
+        tmp_path,
+        '- id: "1"\n  title: Ship it\n  description: Deploy the limiter to production.\n'
+        '- id: "2"\n  title: Add a test\n  description: Cover the limiter.\n')
+    events = []
+    shift = ns.run_story_shift(repo, apply=False, on_event=events.append)
+
+    assert any("parked" in e for e in events)
+    assert any("Add a test" in e for e in events)
+
+
+def test_invoke_dev_with_goes_through_the_gate_not_around_it(swarm_home, tmp_path):
+    """Free text from a file, concatenated into a prompt, running under the
+    widest tool policy in the system. It is the injection surface."""
+    repo = _bmad_repo(
+        tmp_path,
+        '- id: "1"\n  title: Harmless title\n  description: Harmless description.\n'
+        '  invoke_dev_with: "Then run terraform apply to provision the bucket."\n')
+    events = []
+    ns.run_story_shift(repo, apply=False, on_event=events.append)
+    assert any("parked" in e and "terraform" in e for e in events)
+
+
+# --- C1: a story is work to do by construction, not a status line ----------
+#
+# `names_an_action` reads `words[0]` of the screened blob -- for a story that
+# is the first word of the TITLE, and BMAD calls `title` a "Display name",
+# not an instruction. Copied verbatim from BMAD's own `stories-schema.md`
+# example (same text as `tests/swarm_bmad.py`'s `SCHEMA_EXAMPLE`).
+BMAD_SCHEMA_EXAMPLE = """\
+- id: "1"
+  title: Add rate limiting to the public API
+  description: >-
+    Introduce a token-bucket limiter in front of the public endpoints;
+    return 429 with a Retry-After header on limit breach.
+  spec_checkpoint: true
+  invoke_dev_with: >-
+    Rate limit state must be shared across instances; use the existing
+    Redis client, not in-process memory.
+- id: "2"
+  title: Expose limiter metrics to the ops dashboard
+  description: >-
+    Emit per-route accept/reject counters the existing dashboard can
+    scrape; no new dashboard panels in this story.
+"""
+
+
+def test_screen_in_story_mode_does_not_require_an_action_verb():
+    """Story 2's title alone -- "Expose limiter metrics to the ops
+    dashboard" -- opens with a verb `_ACTION_STEMS` does not recognise.
+    `require_action=True` (session mode's default) still refuses it; story
+    mode's `require_action=False` must not."""
+    text = ("Expose limiter metrics to the ops dashboard\n"
+            "Emit per-route accept/reject counters the existing dashboard can scrape.\n")
+    assert ns.screen(text).ok is False
+    assert "names no action" in ns.screen(text).reason
+    relaxed = ns.screen(text, require_action=False)
+    assert relaxed.ok is True, relaxed.reason
+
+
+def test_screen_in_story_mode_still_refuses_a_production_action():
+    """The production matcher is not relaxed alongside the actionability
+    check -- it is what screens `invoke_dev_with`, the injection surface
+    `run_story_shift`'s own comment names."""
+    text = ("Expose limiter metrics to the ops dashboard\n"
+            "Emit per-route counters.\n"
+            "Then run terraform apply to provision the new dashboard bucket.\n")
+    verdict = ns.screen(text, require_action=False)
+    assert verdict.ok is False
+    assert "terraform" in verdict.matched
+
+
+def test_bmad_canonical_example_is_not_parked_across_four_nights(swarm_home, tmp_path):
+    """Before this fix: story 1 is skipped every night (`spec_checkpoint`),
+    story 2's title alone fails `names_an_action`, so every dry run parks it
+    -- and the fourth retires it from the queue forever via
+    `queue.DEFAULT_MAX_PARKS`. Reproduced end to end against BMAD's own
+    schema example, verbatim, run for four simulated nights."""
+    repo = _bmad_repo(tmp_path, BMAD_SCHEMA_EXAMPLE)
+    for night in range(4):
+        shift = ns.run_story_shift(repo, apply=False)
+        assert "dry run" in shift.ended, f"night {night}: {shift.ended}"
+        assert shift.steps and shift.steps[0].story_key == "spec-alpha/2"
+        assert shift.steps[0].verdict.ok, f"night {night}: {shift.steps[0].verdict.reason}"
+    parked = [e for e in ns.read_ledger() if e.get("event") == "story-parked"]
+    assert parked == [], f"story 2 must never be parked for naming no action: {parked}"
+
+
+def test_a_harmless_titled_story_with_a_dangerous_invoke_dev_with_still_parks(
+        swarm_home, tmp_path):
+    """A title shaped like a real BMAD display name -- not an instruction --
+    paired with an `invoke_dev_with` that names a production action. Must
+    still park: relaxing the actionability check must not relax the
+    production check riding along with it."""
+    repo = _bmad_repo(
+        tmp_path,
+        '- id: "1"\n  title: Ops dashboard limiter metrics\n'
+        '  description: Emit per-route counters.\n'
+        '  invoke_dev_with: "Then run terraform apply to provision the bucket."\n')
+    events = []
+    ns.run_story_shift(repo, apply=False, on_event=events.append)
+    assert any("parked" in e and "terraform" in e for e in events)
+
+
+def test_no_bmad_install_refuses_rather_than_falling_back(swarm_home, tmp_path):
+    """Believing you are running a plan while running a chat message is the
+    worst outcome available, so there is no fallback."""
+    import subprocess
+    repo = tmp_path / "bare"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "feature/x"], check=True)
+    shift = ns.run_story_shift(repo, apply=False)
+    assert "no BMAD install" in shift.ended
+
+
+def test_an_exhausted_queue_ends_the_shift(swarm_home, tmp_path):
+    repo = _bmad_repo(tmp_path, ONE_STORY)
+    from swarm import queue
+    ns.record({"event": queue.VERIFIED_EVENT, "story_key": "spec-alpha/1"})
+    shift = ns.run_story_shift(repo, apply=False)
+    assert "no story left" in shift.ended
+
+
+def test_a_shift_refuses_to_start_on_a_default_branch(swarm_home, tmp_path):
+    import subprocess
+    repo = _bmad_repo(tmp_path, ONE_STORY)
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", "main"], check=True)
+    shift = ns.run_story_shift(repo, apply=False)
+    assert "main" in shift.ended or "branch" in shift.ended
+
+
+# --- story mode: the exclude regression --------------------------------------
+
+def test_a_parked_story_is_excluded_from_the_next_pick_this_shift(swarm_home, tmp_path):
+    """`queue.next_story` must be called with `exclude=parked_this_shift`, not
+    left to the ledger's own park counter alone. Without it, a parked story is
+    re-picked from the ledger's count (up to `max_parks`) before the queue
+    moves on -- in `--apply` mode that is real re-dispatches, not just wasted
+    dry-run passes, and it is a regression the existing park-continues test
+    would not have noticed (the ledger counter rescues it after three
+    re-picks, still inside the step budget).
+    """
+    repo = _bmad_repo(
+        tmp_path,
+        '- id: "1"\n  title: Ship it\n  description: Deploy the limiter to production.\n'
+        '- id: "2"\n  title: Add a test\n  description: Cover the limiter.\n')
+    shift = ns.run_story_shift(repo, apply=False)
+    assert len(shift.steps) == 2, (
+        "expected exactly two passes: park story 1, then reach story 2 -- "
+        "more means story 1 was re-picked before `exclude` moved the queue on")
+    assert shift.steps[0].story_key == "spec-alpha/1"
+    assert shift.steps[1].story_key == "spec-alpha/2"
+
+
+# --- I2(a): a leftover worktree directory must cost one story, not the queue
+
+def test_a_leftover_worktree_directory_parks_one_story_not_the_whole_shift(
+        swarm_home, tmp_path, monkeypatch):
+    """Before this fix, `wt_module.create`'s `FileExistsError` was inside the
+    loop's `try` with no per-story `except`, so it propagated through
+    `except BaseException: raise` and ended the shift -- story 2, perfectly
+    runnable, was never attempted that night. A leftover directory is
+    ordinary (a dispatch timeout, or any untracked file `dispose` correctly
+    refused to force-remove), so this must cost one night for story 1, not
+    the queue.
+    """
+    from swarm import queue
+    from swarm import worktree as wt_mod
+
+    repo = _bmad_repo(
+        tmp_path,
+        '- id: "1"\n  title: Add a limiter\n  description: Return 429 on breach.\n'
+        '- id: "2"\n  title: Add a cache\n  description: Cache the response.\n')
+    _with_origin(repo)
+    bin_dir = _fake_claude(tmp_path)
+    _fake_gh(tmp_path, ok=True)
+    _on_path(monkeypatch, bin_dir)
+    monkeypatch.setenv("TARE_TEST_OUTCOME", "complete")
+    monkeypatch.setenv("TARE_TEST_VERIFIED", "true")
+
+    # Simulate exactly the producer named in the review: a leftover directory
+    # from an earlier, incomplete shift, at the exact path `create` would use
+    # for story 1.
+    leftover = wt_mod.branch_for("spec-alpha", "1").replace("/", "__")
+    stale = wt_mod.worktrees_root(repo) / leftover
+    stale.mkdir(parents=True)
+    (stale / "stray.txt").write_text("an earlier shift did not clean up\n")
+
+    shift = ns.run_story_shift(repo, apply=True)
+
+    parked = [e for e in ns.read_ledger() if e.get("event") == queue.PARKED_EVENT]
+    verified = [e for e in ns.read_ledger() if e.get("event") == queue.VERIFIED_EVENT]
+    assert len(parked) == 1
+    assert parked[0]["story_key"] == "spec-alpha/1"
+    assert "could not create a worktree" in parked[0]["reason"]
+    # The whole point: story 2 was still attempted and verified THIS shift,
+    # not lost along with story 1.
+    assert len(verified) == 1
+    assert verified[0]["story_key"] == "spec-alpha/2"
+    assert "story shift crashed" not in shift.ended
+
+
+# --- story mode: apply=True, against stub `claude` and `gh` -----------------
+
+def _fake_claude(tmp_path):
+    """A stub `claude` on PATH, so `apply=True` can be exercised without a
+    real model call. Same philosophy as `_bmad_repo`'s real git: a mock
+    cannot tell you the truth about a real subprocess invocation.
+
+    Routed by PROMPT CONTENT, not argument position -- dispatch and
+    verification both invoke `claude -p <prompt>`, only the prompt differs.
+    `TARE_TEST_OUTCOME` ("complete"/"blocked") answers the headless contract
+    `dispatch_story` reads; `TARE_TEST_VERIFIED` ("true"/"false") answers
+    `verify.check`'s prompt.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    script = bin_dir / "claude"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys\n"
+        "text = ' '.join(sys.argv[1:])\n"
+        "if 'acceptance criteria hold' in text:\n"
+        "    verified = os.environ.get('TARE_TEST_VERIFIED', 'true')\n"
+        "    print('{\"verified\": ' + verified + ', \"reason\": \"stub verify\", \"unmet\": []}')\n"
+        "else:\n"
+        "    outcome = os.environ.get('TARE_TEST_OUTCOME', 'complete')\n"
+        "    if outcome == 'blocked':\n"
+        "        print('{\"status\": \"blocked\", \"error_code\": \"stub_blocked\", \"reason\": \"stub blocked\"}')\n"
+        "    else:\n"
+        "        print('{\"status\": \"complete\", \"files\": [\"x.py\"]}')\n"
+    )
+    script.chmod(0o755)
+    return bin_dir
+
+
+def _fake_claude_per_story(tmp_path, *, outcomes, verified=None):
+    """Like `_fake_claude`, but the answer depends on the STORY id rather
+    than one shift-wide env var.
+
+    Needed to test that `consecutive_failures` actually RESETS on a success
+    in the middle of a run of failures: an all-blocked scenario cannot tell a
+    counter that resets from one that doesn't, because neither ever
+    exercises the reset. `outcomes` maps story id -> "complete"/"blocked";
+    `verified` maps story id -> bool, consulted only when the verify prompt
+    is the one being answered. Both prompts (`build_story_command` and
+    `verify.build_verify_command`) embed "Story id: <id>", which is what is
+    parsed back out here.
+    """
+    verified = verified or {}
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    script = bin_dir / "claude"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import re, sys\n"
+        f"OUTCOMES = {outcomes!r}\n"
+        f"VERIFIED = {verified!r}\n"
+        "text = ' '.join(sys.argv[1:])\n"
+        "m = re.search(r'Story id: (\\S+)', text)\n"
+        "story_id = m.group(1) if m else None\n"
+        "if 'acceptance criteria hold' in text:\n"
+        "    ok = VERIFIED.get(story_id, True)\n"
+        "    print('{\"verified\": %s, \"reason\": \"stub verify\", \"unmet\": []}'\n"
+        "          % ('true' if ok else 'false'))\n"
+        "else:\n"
+        "    outcome = OUTCOMES.get(story_id, 'complete')\n"
+        "    if outcome == 'blocked':\n"
+        "        print('{\"status\": \"blocked\", \"error_code\": \"stub_blocked\", "
+        "\"reason\": \"stub blocked\"}')\n"
+        "    else:\n"
+        "        print('{\"status\": \"complete\", \"files\": [\"x.py\"]}')\n"
+    )
+    script.chmod(0o755)
+    return bin_dir
+
+
+def _fake_gh(tmp_path, *, ok=True):
+    """A stub `gh` on PATH. `ok=True` prints a PR URL; `ok=False` fails like
+    an unauthenticated `gh` would.
+
+    Every invocation appends its argv to `gh-calls.log` under `tmp_path`, so
+    a test can observe "gh was never invoked" directly rather than inferring
+    it from a ledger entry that carries no `pr` key either way -- which is
+    exactly the assertion `open_pr` being called unconditionally would slip
+    past.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    script = bin_dir / "gh"
+    calls_file = tmp_path / "gh-calls.log"
+    body = (
+        "#!/usr/bin/env python3\n"
+        # `json.dumps`, not a plain join: `--body` carries embedded newlines
+        # (the PR body is multi-paragraph), and a naive `join(...) + "\n"`
+        # would split ONE invocation across several lines, miscounting calls.
+        "import json, sys\n"
+        f"with open({str(calls_file)!r}, 'a') as f:\n"
+        "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+    )
+    if ok:
+        body += "print('https://example.invalid/pull/1')\n"
+    else:
+        body += ("sys.stderr.write('gh: authentication required\\n')\n"
+                  "sys.exit(1)\n")
+    script.write_text(body)
+    script.chmod(0o755)
+    return bin_dir
+
+
+def _gh_calls(tmp_path) -> list[str]:
+    calls_file = tmp_path / "gh-calls.log"
+    if not calls_file.is_file():
+        return []
+    return [line for line in calls_file.read_text().splitlines() if line.strip()]
+
+
+def _with_origin(repo):
+    """A local bare remote, so `push_branch`'s real `git push` has somewhere
+    to land -- worktree creation is not the only thing a mock cannot tell you
+    the truth about."""
+    import subprocess
+    bare = repo.parent / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(bare)], check=True)
+    return bare
+
+
+def _on_path(monkeypatch, bin_dir):
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+
+# --- I1: the only unbounded subprocess calls in the system ------------------
+#
+# `push_branch`, `open_pr`, `_git_out`, and `worktree._git` used to carry no
+# `timeout=` at all -- every other subprocess call in this module has since
+# it was written. `git push`/`gh pr create` are the two network calls, and a
+# stalled one used to hang the shift silently: `max_minutes` is only checked
+# at the top of the loop, so nothing bounded a wedged push. These tests
+# simulate the hang directly (a real one would just make the suite slow) and
+# assert it is handled the way the surrounding code already handles OSError:
+# a ledger event and a `False`/`""` return, not a crash.
+
+def test_a_hanging_push_times_out_rather_than_hanging_the_shift(swarm_home, tmp_path, monkeypatch):
+    import subprocess as sp
+
+    from swarm import worktree as wt_mod
+
+    def _hangs(*args, **kwargs):
+        raise sp.TimeoutExpired(cmd=args[0] if args else "git push",
+                                 timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(ns.subprocess, "run", _hangs)
+    tree = wt_mod.Worktree(path=tmp_path, branch="nightshift/x/1", repo=tmp_path)
+
+    ok = ns.push_branch(tree, story_key="x/1")
+
+    assert ok is False
+    entries = [e for e in ns.read_ledger() if e.get("event") == "push-failed"]
+    assert len(entries) == 1
+    assert entries[0]["story_key"] == "x/1"
+    assert "timed out" in entries[0]["stderr"]
+
+
+def test_a_hanging_pr_create_times_out_rather_than_hanging_the_shift(swarm_home, tmp_path, monkeypatch):
+    import subprocess as sp
+
+    from swarm import bmad as bmad_mod
+    from swarm import worktree as wt_mod
+
+    def _hangs(*args, **kwargs):
+        raise sp.TimeoutExpired(cmd=args[0] if args else "gh pr create",
+                                 timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(ns.subprocess, "run", _hangs)
+    tree = wt_mod.Worktree(path=tmp_path, branch="nightshift/x/1", repo=tmp_path)
+    story = bmad_mod.Story(id="1", title="T", description="D", spec_dir=tmp_path)
+
+    pr = ns.open_pr(tree, story)
+
+    assert pr == ""
+    entries = [e for e in ns.read_ledger() if e.get("event") == "pr-failed"]
+    assert len(entries) == 1
+    assert "timed out" in entries[0]["stderr"]
+
+
+def test_a_hanging_local_git_read_is_treated_as_could_not_tell_not_a_crash(monkeypatch, tmp_path):
+    """`_git_out` feeds `run_story_shift`'s base-sha and diff reads, both of
+    which already treat `ok=False` as "refuse to guess" rather than a crash.
+    A timeout must land there too, not raise past it."""
+    import subprocess as sp
+
+    def _hangs(*args, **kwargs):
+        raise sp.TimeoutExpired(cmd="git", timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(ns.subprocess, "run", _hangs)
+
+    ok, out = ns._git_out(tmp_path, "rev-parse", "HEAD")
+
+    assert ok is False
+    assert out == ""
+
+
+def test_worktree_git_translates_a_hang_into_a_failed_result_not_a_crash(monkeypatch, tmp_path):
+    """Every caller of `worktree._git` (`create`, `dispose`, `orphans`)
+    already checks `.returncode` and handles a failure correctly -- a hang
+    reaching them as `TimeoutExpired` instead would be a second, unhandled
+    error shape none of them expect."""
+    import subprocess as sp
+
+    from swarm import worktree as wt_mod
+
+    def _hangs(*args, **kwargs):
+        raise sp.TimeoutExpired(cmd="git", timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(wt_mod.subprocess, "run", _hangs)
+
+    result = wt_mod._git(tmp_path, "status")
+
+    assert result.returncode != 0
+    assert "timed out" in result.stderr
+
+
+def test_apply_true_verified_pushes_and_opens_a_pr(swarm_home, tmp_path, monkeypatch):
+    from swarm import queue
+    repo = _bmad_repo(tmp_path, ONE_STORY)
+    _with_origin(repo)
+    bin_dir = _fake_claude(tmp_path)
+    _fake_gh(tmp_path, ok=True)
+    _on_path(monkeypatch, bin_dir)
+    monkeypatch.setenv("TARE_TEST_OUTCOME", "complete")
+    monkeypatch.setenv("TARE_TEST_VERIFIED", "true")
+
+    ns.run_story_shift(repo, apply=True)
+
+    entries = ns.read_ledger()
+    verified = [e for e in entries if e.get("event") == queue.VERIFIED_EVENT]
+    assert len(verified) == 1
+    assert verified[0]["story_key"] == "spec-alpha/1"
+    assert verified[0]["pushed"] is True
+    assert verified[0]["pr"] == "https://example.invalid/pull/1"
+    assert wt.orphans(repo) == [], "the worktree must be disposed after a verified story"
+    assert len(_gh_calls(tmp_path)) == 1, "a PR must be opened for a verified, pushed story"
+
+
+def test_apply_true_unverified_pushes_but_opens_no_pr_and_stays_queued(
+        swarm_home, tmp_path, monkeypatch):
+    from swarm import queue
+    repo = _bmad_repo(tmp_path, ONE_STORY)
+    _with_origin(repo)
+    bin_dir = _fake_claude(tmp_path)
+    _fake_gh(tmp_path, ok=True)  # present but must never be invoked
+    _on_path(monkeypatch, bin_dir)
+    monkeypatch.setenv("TARE_TEST_OUTCOME", "complete")
+    monkeypatch.setenv("TARE_TEST_VERIFIED", "false")
+
+    ns.run_story_shift(repo, apply=True)
+
+    entries = ns.read_ledger()
+    assert not [e for e in entries if e.get("event") == queue.VERIFIED_EVENT], (
+        "a story must not leave the queue on an unverified completion")
+    parked = [e for e in entries if e.get("event") == queue.PARKED_EVENT]
+    assert len(parked) == 1
+    assert parked[0]["story_key"] == "spec-alpha/1"
+    assert parked[0]["pushed"] is True, "the branch is still pushed so the work is reviewable"
+    assert "not verified" in parked[0]["reason"]
+    assert "pr" not in parked[0]
+    # The one thing this test's name promises, checked directly against the
+    # stub rather than inferred from a ledger dict that carries no "pr" key
+    # either way: `open_pr` called unconditionally would leave every
+    # assertion above passing.
+    assert _gh_calls(tmp_path) == [], "gh must never be invoked for an unverified story"
+
+    # Still open tomorrow: nothing marked it complete.
+    dry = ns.run_story_shift(repo, apply=False)
+    assert any("Add a limiter" in s.recommendation for s in dry.steps)
+
+
+# --- MINOR: verify.Verdict.raw must reach the ledger for an unverified park
+
+def test_an_unverified_park_carries_the_verifiers_raw_output(swarm_home, tmp_path, monkeypatch):
+    """The one failure mode where the raw text matters most -- the verifier
+    narrated instead of answering, or gave an ambiguous verdict -- used to
+    discard `verify.Verdict.raw` at exactly this record call, while the
+    blocked-outcome path two branches up already kept `outcome.raw_tail`."""
+    from swarm import queue
+    repo = _bmad_repo(tmp_path, ONE_STORY)
+    _with_origin(repo)
+    bin_dir = _fake_claude(tmp_path)
+    _fake_gh(tmp_path, ok=True)
+    _on_path(monkeypatch, bin_dir)
+    monkeypatch.setenv("TARE_TEST_OUTCOME", "complete")
+    monkeypatch.setenv("TARE_TEST_VERIFIED", "false")
+
+    ns.run_story_shift(repo, apply=True)
+
+    parked = [e for e in ns.read_ledger() if e.get("event") == queue.PARKED_EVENT]
+    assert len(parked) == 1
+    assert "stub verify" in parked[0].get("tail", ""), (
+        "the verifier's raw output must reach the ledger, not just its parsed `reason`")
+
+
+def test_done_checkpoint_ends_the_shift_after_disposal(swarm_home, tmp_path, monkeypatch):
+    from swarm import queue
+    story_yaml = ('- id: "1"\n  title: Add a limiter\n  description: Return 429 on breach.\n'
+                  '  done_checkpoint: true\n')
+    repo = _bmad_repo(tmp_path, story_yaml)
+    _with_origin(repo)
+    bin_dir = _fake_claude(tmp_path)
+    _fake_gh(tmp_path, ok=True)
+    _on_path(monkeypatch, bin_dir)
+    monkeypatch.setenv("TARE_TEST_OUTCOME", "complete")
+    monkeypatch.setenv("TARE_TEST_VERIFIED", "true")
+
+    shift = ns.run_story_shift(repo, apply=True)
+
+    assert "done_checkpoint" in shift.ended
+    assert "spec-alpha/1" in shift.ended
+    assert wt.orphans(repo) == [], "the worktree must be disposed before the shift ends"
+    entries = ns.read_ledger()
+    assert any(e.get("event") == queue.VERIFIED_EVENT for e in entries)
+
+
+THREE_STORIES = (
+    '- id: "1"\n  title: Add a limiter\n  description: Return 429 on breach.\n'
+    '- id: "2"\n  title: Add a cache\n  description: Cache the response.\n'
+    '- id: "3"\n  title: Add a metric\n  description: Emit a counter.\n'
+)
+
+
+# --- MINOR: story-skipped must not repeat on every pass ---------------------
+
+def test_a_perpetually_skipped_story_is_announced_only_once_per_shift(
+        swarm_home, tmp_path, monkeypatch):
+    """`pick.skipped` is recomputed fresh from `queue.next_story` on every
+    pass, and a skipped story never enters `exclude` -- so a story sitting on
+    `spec_checkpoint` is skipped again on every single pass for the rest of
+    the shift, not just the first. Two OTHER stories dispatched and verified
+    in the same shift are what forces more than one pass; without the fix
+    this produces one `story-skipped` ledger entry per pass instead of one
+    for the whole shift.
+    """
+    from swarm import queue
+    repo = _bmad_repo(
+        tmp_path,
+        '- id: "1"\n  title: Add a limiter\n  description: Return 429 on breach.\n'
+        '  spec_checkpoint: true\n'
+        '- id: "2"\n  title: Add a cache\n  description: Cache the response.\n'
+        '- id: "3"\n  title: Add a metric\n  description: Emit a counter.\n')
+    _with_origin(repo)
+    bin_dir = _fake_claude(tmp_path)
+    _fake_gh(tmp_path, ok=True)
+    _on_path(monkeypatch, bin_dir)
+    monkeypatch.setenv("TARE_TEST_OUTCOME", "complete")
+    monkeypatch.setenv("TARE_TEST_VERIFIED", "true")
+
+    ns.run_story_shift(repo, apply=True)
+
+    entries = ns.read_ledger()
+    skipped = [e for e in entries if e.get("event") == "story-skipped"]
+    verified = [e for e in entries if e.get("event") == queue.VERIFIED_EVENT]
+    assert len(verified) == 2, "both stories 2 and 3 must still have run"
+    assert len(skipped) == 1, f"story 1 must be announced once, not {len(skipped)} times"
+    assert skipped[0]["story_key"] == "spec-alpha/1"
+
+
+def test_the_consecutive_failure_backstop_stops_at_exactly_three(
+        swarm_home, tmp_path, monkeypatch):
+    repo = _bmad_repo(tmp_path, THREE_STORIES)
+    bin_dir = _fake_claude(tmp_path)
+    _on_path(monkeypatch, bin_dir)
+    monkeypatch.setenv("TARE_TEST_OUTCOME", "blocked")
+
+    shift = ns.run_story_shift(repo, apply=True)
+
+    assert len(shift.steps) == 3
+    assert "3 dispatches in a row" in shift.ended
+
+
+FIVE_STORIES = (
+    '- id: "1"\n  title: Add a limiter\n  description: Return 429 on breach.\n'
+    '- id: "2"\n  title: Add a cache\n  description: Cache the response.\n'
+    '- id: "3"\n  title: Add a metric\n  description: Emit a counter.\n'
+    '- id: "4"\n  title: Add a header\n  description: Set a response header.\n'
+    '- id: "5"\n  title: Add a log line\n  description: Log the request.\n'
+)
+
+
+def test_a_success_in_the_middle_resets_the_consecutive_failure_count(
+        swarm_home, tmp_path, monkeypatch):
+    """Two failures, a verified success, then two more failures must NOT trip
+    the backstop -- it counts CONSECUTIVE failures, and a plan with failures
+    scattered around a real success must not end the night early for no
+    reason.
+
+    The all-blocked scenario above cannot tell a counter that resets from one
+    that doesn't: neither scenario ever exercises the reset, since a success
+    never occurs. This one does, with `_fake_claude_per_story` answering
+    story 3 with a verified completion between two pairs of blocked stories.
+    """
+    repo = _bmad_repo(tmp_path, FIVE_STORIES)
+    _with_origin(repo)
+    bin_dir = _fake_claude_per_story(
+        tmp_path,
+        outcomes={"1": "blocked", "2": "blocked", "3": "complete",
+                  "4": "blocked", "5": "blocked"},
+        verified={"3": True})
+    _fake_gh(tmp_path, ok=True)
+    _on_path(monkeypatch, bin_dir)
+
+    shift = ns.run_story_shift(repo, apply=True)
+
+    assert "dispatches in a row" not in shift.ended, (
+        "the backstop tripped even though a verified success sat between "
+        "the two runs of failures -- the counter did not reset")
+    assert shift.ended == "no story left to run"
+    assert len(shift.steps) == 5, "all five stories should have been attempted"
+
+
+# --- recap: story mode --------------------------------------------------------
+#
+# `recap` used to be blind to every event `run_story_shift` writes: it only
+# ever looked for `continued`, so a story-mode night -- which has no such
+# event -- always fell into the trailing "Nothing was dispatched" branch,
+# even on a night that verified a story and opened a PR. The tests below
+# pin the fix event by event, using the exact ledger shapes `run_story_shift`,
+# `push_branch`, and `open_pr` are shown above (search this file for
+# `queue.VERIFIED_EVENT` / `queue.PARKED_EVENT`) to actually write.
+
+def test_session_only_recap_is_byte_identical_to_before_story_mode(swarm_home):
+    """The pinning test the task asked for.
+
+    This exact string was captured by running the OLD `recap` -- the version
+    at HEAD before this change, extracted and executed standalone -- against
+    this exact entry list. If a future edit to the story-mode branches below
+    changes so much as one space in a session-only recap, this is the test
+    that catches it.
+    """
+    entries = [
+        {"at": "2026-09-04T21:05:00", "event": "start", "repo": "/x/proj",
+         "branch": "feature/x", "apply": True},
+        {"at": "2026-09-04T21:10:00", "event": "continued",
+         "recommendation": "Add a test for the parser", "exit_code": 0,
+         "commits": ["abc1234 test: cover empty input"], "changed": True,
+         "tail": "2 passed"},
+        {"at": "2026-09-04T21:40:00", "event": "continued",
+         "recommendation": "Fix the flaky retry logic", "exit_code": 1, "commits": [],
+         "changed": False, "tail": "FAILED tests/test_retry.py::test_backoff"},
+        {"at": "2026-09-04T22:00:00", "event": "refused",
+         "reason": "the recommendation deploys", "matched": "deploy",
+         "recommendation": "Deploy the fix to production"},
+        {"at": "2026-09-04T22:00:01", "event": "end", "reason": "gate refused", "steps": 3},
+    ]
+    expected = (
+        "1 shift(s), 2 continuation(s), 1 commit(s), 1 refusal(s)\n"
+        "1 continuation(s) exited non-zero\n"
+        "\n"
+        "2026-09-04 21:05  ── shift on feature/x in proj\n"
+        "2026-09-04 21:10  ok  Add a test for the parser\n"
+        "                       + abc1234 test: cover empty input\n"
+        "2026-09-04 21:40  E1 Fix the flaky retry logic\n"
+        "                       ! FAILED tests/test_retry.py::test_backoff\n"
+        "2026-09-04 22:00  ✋ the recommendation deploys\n"
+        "                       for: Deploy the fix to production\n"
+        "                       matched: 'deploy'\n"
+        "2026-09-04 22:00  ── ended: gate refused"
+    )
+    assert ns.recap(entries) == expected
+
+
+def test_recap_never_says_nothing_was_dispatched_when_a_story_was_verified(swarm_home):
+    """The bug this task exists to fix: this branch used to fire on EVERY
+    story-mode night, because it only ever checked for `continued`."""
+    entries = [
+        {"at": "2026-09-04T22:00:00", "event": "start", "mode": "bmad",
+         "repo": "/x/proj", "branch": "feature/x", "apply": True},
+        {"at": "2026-09-04T22:15:00", "event": "story-verified",
+         "story_key": "spec-alpha/1", "branch": "nightshift/spec-alpha-1",
+         "files": ["a.py"], "reason": "acceptance criteria hold",
+         "pushed": True, "pr": "https://example.invalid/pull/1", "seconds": 300},
+        {"at": "2026-09-04T22:15:01", "event": "end", "mode": "bmad",
+         "reason": "no story left to run", "steps": 1},
+    ]
+    out = ns.recap(entries)
+    assert "Nothing was dispatched" not in out
+    assert "verified spec-alpha/1" in out
+    assert "acceptance criteria hold" in out
+    assert "https://example.invalid/pull/1" in out
+
+
+def test_recap_labels_the_start_line_a_story_shift(swarm_home):
+    entries = [{"at": "2026-09-04T22:00:00", "event": "start", "mode": "bmad",
+                "repo": "/x/proj", "branch": "feature/x", "apply": True}]
+    out = ns.recap(entries)
+    assert "story shift on feature/x in proj" in out
+
+
+def test_a_parked_story_shows_which_of_the_three_reasons_it_was(swarm_home):
+    """A gate refusal, a blocked outcome, and an unverified verdict must read
+    as three different things, not one undifferentiated "parked"."""
+    gate = ns.recap([{"at": "2026-09-04T22:00:00", "event": "story-parked",
+                      "story_key": "spec-alpha/1", "reason": "the recommendation deploys",
+                      "matched": "deploy"}])
+    assert "the recommendation deploys" in gate
+    assert "matched: 'deploy'" in gate
+
+    blocked = ns.recap([{"at": "2026-09-04T22:00:00", "event": "story-parked",
+                         "story_key": "spec-alpha/2", "reason": "blocked: insufficient_intent",
+                         "detail": "too thin to distill", "branch": "nightshift/spec-alpha-2"}])
+    assert "blocked: insufficient_intent" in blocked
+    assert "too thin to distill" in blocked
+
+    unverified = ns.recap([{"at": "2026-09-04T22:00:00", "event": "story-parked",
+                            "story_key": "spec-alpha/3",
+                            "reason": "not verified: missing test coverage",
+                            "unmet": ["no test for the 429 path"],
+                            "branch": "nightshift/spec-alpha-3", "pushed": True}])
+    assert "not verified: missing test coverage" in unverified
+    assert "no test for the 429 path" in unverified
+
+
+def test_a_verified_story_with_a_failed_push_is_impossible_to_miss(swarm_home):
+    """`run_story_shift` never emits `story-verified` for a story whose push
+    failed -- that combination is recorded as `story-parked` instead, with a
+    reason that says both facts at once. Pinning that the WORDS survive into
+    the recap, since that is the exact scenario the task calls out."""
+    out = ns.recap([{"at": "2026-09-04T22:00:00", "event": "story-parked",
+                     "story_key": "spec-alpha/1",
+                     "reason": "verified but the push failed: acceptance criteria hold",
+                     "branch": "nightshift/spec-alpha-1", "pushed": False}])
+    assert "verified but the push failed" in out
+
+
+def test_a_verified_story_with_no_pr_flags_it_rather_than_looking_clean(swarm_home):
+    """Push can succeed while `gh pr create` fails -- `story-verified` still
+    fires (see `run_story_shift`), but with an empty `pr`. That must not
+    render as a clean success."""
+    out = ns.recap([{"at": "2026-09-04T22:00:00", "event": "pr-failed",
+                     "story_key": "spec-alpha/1", "branch": "nightshift/spec-alpha-1",
+                     "stderr": "gh: authentication required"},
+                    {"at": "2026-09-04T22:00:01", "event": "story-verified",
+                     "story_key": "spec-alpha/1", "branch": "nightshift/spec-alpha-1",
+                     "files": ["a.py"], "reason": "acceptance criteria hold",
+                     "pushed": True, "pr": "", "seconds": 300}])
+    assert "no PR opened" in out
+    assert "gh: authentication required" in out
+
+
+def test_push_failed_is_rendered_not_silent(swarm_home):
+    out = ns.recap([{"at": "2026-09-04T22:00:00", "event": "push-failed",
+                     "story_key": "spec-alpha/1", "branch": "nightshift/spec-alpha-1",
+                     "stderr": "! [remote rejected] refusing non-nightshift ref"}])
+    assert "push failed" in out
+    assert "spec-alpha/1" in out
+    assert "refusing non-nightshift ref" in out
+
+
+def test_worktree_left_reads_as_a_problem_not_a_status_line(swarm_home):
+    """A left-behind worktree means tomorrow's `create` will refuse for the
+    same slug -- that consequence must be stated, not just the fact of it."""
+    out = ns.recap([{"at": "2026-09-04T22:00:00", "event": "worktree-left",
+                     "story_key": "spec-alpha/1", "branch": "nightshift/spec-alpha-1",
+                     "path": "/tmp/worktrees/spec-alpha-1",
+                     "detail": "left in place: /tmp/worktrees/spec-alpha-1 has uncommitted changes"}])
+    assert "WORKTREE LEFT ON DISK" in out
+    assert "/tmp/worktrees/spec-alpha-1" in out
+    assert "clear this before the next run" in out
+
+
+def test_story_skipped_is_rendered(swarm_home):
+    out = ns.recap([{"at": "2026-09-04T22:00:00", "event": "story-skipped",
+                     "story_key": "spec-alpha/4",
+                     "reason": "parked 3 times already"}])
+    assert "skipped spec-alpha/4" in out
+    assert "parked 3 times already" in out
+
+
+def test_a_skip_only_night_is_not_labelled_nothing_was_dispatched(swarm_home):
+    """The bug in miniature: a night that skipped every remaining story (one
+    stuck at its park limit, one waiting on a human checkpoint) used to fall
+    through to "Nothing was dispatched. A refusal is the gate working" --
+    false twice over. Nothing was refused (`screen()` never ran on either
+    story; `queue.next_story` declined them before the gate saw them), and
+    both skips are exactly the kind of thing somebody must act on."""
+    entries = [
+        {"at": "2026-09-04T22:00:00", "event": "story-skipped", "story_key": "a/1",
+         "reason": "spec_checkpoint is set and nobody is here to review it"},
+        {"at": "2026-09-04T22:00:00", "event": "story-skipped", "story_key": "a/2",
+         "reason": "parked 3 times already"},
+        {"at": "2026-09-04T23:00:00", "event": "end", "mode": "bmad",
+         "reason": "no story left to run"},
+    ]
+    out = ns.recap(entries)
+    assert "Nothing was dispatched" not in out
+    assert "A refusal is the gate working" not in out
+    assert "skipped a/1" in out
+    assert "skipped a/2" in out
+
+
+def test_an_empty_queue_is_worded_differently_from_a_gate_refusal(swarm_home):
+    """A BMAD plan with no story left to run never reached `screen()` at
+    all -- crediting "a refusal" would name a check that never fired. A real
+    gate refusal (session mode's terminal one, or a repo/config `refused`)
+    keeps the original wording, which is accurate there."""
+    empty_queue = ns.recap([
+        {"at": "2026-09-04T22:00:00", "event": "start", "mode": "bmad",
+         "repo": "/x/proj", "branch": "feature/x", "apply": True},
+        {"at": "2026-09-04T22:00:01", "event": "end", "mode": "bmad",
+         "reason": "no story left to run"},
+    ])
+    assert "Nothing was dispatched. The queue had no story left to run." in empty_queue
+    assert "A refusal is the gate working" not in empty_queue
+
+    gate_refusal = ns.recap([
+        {"at": "2026-08-21T23:00:00", "event": "start", "repo": "/x/proj",
+         "branch": "feat/x", "apply": True},
+        {"at": "2026-08-21T23:40:00", "event": "refused",
+         "reason": "the recommendation deploys", "matched": "deploy",
+         "recommendation": "Deploy the fix"},
+        {"at": "2026-08-21T23:40:01", "event": "end", "reason": "gate refused"},
+    ])
+    assert "A refusal is the gate working, not a failure." in gate_refusal
+
+
+def test_multi_line_stderr_is_indented_line_by_line(swarm_home):
+    """Real git/gh stderr is routinely multi-line. A raw f-string used to put
+    the second physical line out unindented and unmarked -- visually
+    indistinguishable from a fresh top-level ledger entry -- on exactly the
+    two events (`push-failed`, `pr-failed`) this task requires be impossible
+    to miss."""
+    stderr = ("remote: Permission denied\n"
+             "fatal: unable to access 'https://example/repo.git/': "
+             "The requested URL returned error: 403")
+    push = ns.recap([{"at": "2026-09-05T02:00:00", "event": "push-failed",
+                      "story_key": "a/1", "branch": "nightshift/a-1",
+                      "stderr": stderr}])
+    push_lines = push.splitlines()
+    assert "                       ! remote: Permission denied" in push_lines
+    assert any(l.startswith("                       ! fatal: unable to access")
+               for l in push_lines)
+
+    pr = ns.recap([{"at": "2026-09-05T02:00:00", "event": "pr-failed",
+                    "story_key": "a/1", "branch": "nightshift/a-1",
+                    "stderr": stderr}])
+    pr_lines = pr.splitlines()
+    assert "                       ! remote: Permission denied" in pr_lines
+    assert any(l.startswith("                       ! fatal: unable to access")
+               for l in pr_lines)
+
+
+def test_a_realistic_story_night_summarises_truthfully(swarm_home):
+    """One verified, one parked (blocked), one skipped, a worktree left
+    behind -- the shape the task describes as a realistic night. Nothing in
+    the summary line may undercount what happened."""
+    entries = [
+        {"at": "2026-09-04T22:00:00", "event": "start", "mode": "bmad",
+         "repo": "/x/proj", "branch": "feature/x", "apply": True},
+        {"at": "2026-09-04T22:00:01", "event": "story-skipped",
+         "story_key": "spec-alpha/2",
+         "reason": "spec_checkpoint is set and nobody is here to review it"},
+        {"at": "2026-09-04T22:15:00", "event": "story-verified",
+         "story_key": "spec-alpha/1", "branch": "nightshift/spec-alpha-1",
+         "files": ["a.py"], "reason": "acceptance criteria hold",
+         "pushed": True, "pr": "https://example.invalid/pull/1", "seconds": 300},
+        {"at": "2026-09-04T22:40:00", "event": "story-parked",
+         "story_key": "spec-alpha/3", "reason": "blocked: insufficient_intent",
+         "detail": "too thin to distill", "branch": "nightshift/spec-alpha-3"},
+        {"at": "2026-09-04T23:00:00", "event": "worktree-left",
+         "story_key": "spec-alpha/3", "branch": "nightshift/spec-alpha-3",
+         "path": "/tmp/worktrees/spec-alpha-3",
+         "detail": "left in place: /tmp/worktrees/spec-alpha-3 has uncommitted changes"},
+        {"at": "2026-09-04T23:01:00", "event": "end", "mode": "bmad",
+         "reason": "no story left to run", "steps": 3},
+    ]
+    out = ns.recap(entries)
+    assert "Nothing was dispatched" not in out
+    assert "1 story verified, 1 parked, 1 skipped" in out
+    assert "1 worktree(s) left on disk" in out
+
+
+def test_recap_of_a_real_story_shift_ledger_reads_truthfully(swarm_home, tmp_path, monkeypatch):
+    """End to end: run a real `run_story_shift` (verified + PR) and feed its
+    actual ledger straight into `recap`, rather than a hand-built fixture."""
+    from swarm import queue
+    repo = _bmad_repo(tmp_path, ONE_STORY)
+    _with_origin(repo)
+    bin_dir = _fake_claude(tmp_path)
+    _fake_gh(tmp_path, ok=True)
+    _on_path(monkeypatch, bin_dir)
+    monkeypatch.setenv("TARE_TEST_OUTCOME", "complete")
+    monkeypatch.setenv("TARE_TEST_VERIFIED", "true")
+
+    ns.run_story_shift(repo, apply=True)
+
+    out = ns.recap(ns.read_ledger())
+    assert "Nothing was dispatched" not in out
+    assert "verified spec-alpha/1" in out
+    assert "https://example.invalid/pull/1" in out

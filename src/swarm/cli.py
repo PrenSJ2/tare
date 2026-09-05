@@ -5,7 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from swarm import doctor, install, paths
+from swarm import bmad, doctor, install, nightshift, paths
 
 
 def _newest_stream():
@@ -21,7 +21,25 @@ def _cmd_doctor(args) -> int:
     if path is None:
         print("no streams found in", paths.runs_dir())
         return 0
-    print(doctor.render(doctor.inspect(path), doctor.check_hook_command()))
+
+    extra = doctor.check_hook_command()
+    # `doctor`'s positional argument is a stream path, not a repository --
+    # there is nowhere else to get one from but the working directory this
+    # command was run in (see the `doctor` subparser's help text). Gated on
+    # `is_installed`: a project that has never touched BMAD must see exactly
+    # today's output, not a new "no BMAD install" warning on every run. That
+    # would turn a diagnostic into noise, and a noisy diagnostic gets
+    # ignored -- which defeats the reason this check exists.
+    repo = Path.cwd()
+    if bmad.is_installed(repo):
+        # No `[level]` tag: every other entry in this list (from
+        # `check_hook_command` and from `render`'s own problems) is a plain
+        # sentence with no severity marker, and a report that tags only
+        # some of its lines reads as two different tools glued together.
+        # "ok" findings are dropped -- `render`'s "Problems:" section is
+        # for what needs attention, not a health statement.
+        extra = extra + [message for level, message in doctor.check_bmad(repo) if level != "ok"]
+    print(doctor.render(doctor.inspect(path), extra))
     return 0
 
 
@@ -128,22 +146,59 @@ def _cmd_nightshift(args) -> int:
         print("`claude` is not on PATH -- nothing to dispatch to")
         return 1
 
-    session = args.session or reader.current_session()
-    if session is None:
-        print("no session transcript found")
-        return 1
     repo = paths.working_tree(args.repo)
 
-    shift = ns.run_shift(
-        session, repo,
-        apply=args.apply,
-        max_steps=args.max_steps,
-        max_minutes=args.max_minutes,
-        step_timeout_minutes=args.step_timeout,
-        ignore_window=args.anytime,
-        wait_for_window=args.wait,
-        on_event=print,
-    )
+    if args.queue == "bmad":
+        # `session`, `--wait`, and `--anytime` are all `session`-mode
+        # concepts `run_story_shift` does not take: there is no transcript to
+        # watch (the positional), no window it arms itself to wait for
+        # (`--wait` -- story mode's window is optional per-call via
+        # `--window`, not something to sleep until), and no terminal gate
+        # refusal `--anytime` overrides (a refusal parks the story instead).
+        # Before this, argparse accepted all three under `--queue bmad` and
+        # they were silently ignored -- `swarm nightshift start --wait
+        # --queue bmad` looked like it armed the shift and did nothing of
+        # the sort. Rejected here with a clear message rather than allowed to
+        # look honoured.
+        misused = []
+        if args.session:
+            misused.append(f"the session argument ({args.session!r})")
+        if args.wait:
+            misused.append("--wait")
+        if args.anytime:
+            misused.append("--anytime")
+        if misused:
+            print(f"error: --queue bmad does not use {', '.join(misused)} -- "
+                  "story mode has no session to watch and no window to arm "
+                  "itself for; use --window to restrict it to the night "
+                  "window instead of --anytime, and drop the rest.")
+            return 1
+        # No session to watch -- the plan is the source of the next step, and
+        # `run_story_shift` does not take one.
+        shift = ns.run_story_shift(
+            repo,
+            apply=args.apply,
+            max_steps=args.max_steps,
+            max_minutes=args.max_minutes,
+            step_timeout_minutes=args.step_timeout,
+            ignore_window=not args.window,
+            on_event=print,
+        )
+    else:
+        session = args.session or reader.current_session()
+        if session is None:
+            print("no session transcript found")
+            return 1
+        shift = ns.run_shift(
+            session, repo,
+            apply=args.apply,
+            max_steps=args.max_steps,
+            max_minutes=args.max_minutes,
+            step_timeout_minutes=args.step_timeout,
+            ignore_window=args.anytime,
+            wait_for_window=args.wait,
+            on_event=print,
+        )
     print(f"\nended: {shift.ended}")
     print(f"{len(shift.steps)} step(s). Read them back with: swarm nightshift recap")
     # Non-zero when nothing was carried forward, so a wrapper script can tell.
@@ -245,12 +300,20 @@ def _cmd_show(args) -> int:
     return 0
 
 
-def main(argv=None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="swarm", description="Agent event stream.")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_doctor = sub.add_parser("doctor", help="validate a stream and report what is missing")
-    p_doctor.add_argument("path", nargs="?")
+    p_doctor = sub.add_parser(
+        "doctor",
+        help="validate a stream and report what is missing",
+        description="Validate a stream and report what is missing. "
+                     "If a BMAD install is found in the current working "
+                     "directory, its health is reported too -- run this "
+                     "from the repository you want inspected, not the one "
+                     "the stream happens to be stored under.")
+    p_doctor.add_argument("path", nargs="?", help="stream file (default: the newest under "
+                                                  "~/.claude/swarm/runs)")
     p_doctor.set_defaults(fn=_cmd_doctor)
 
     sub.add_parser("list", help="list captured streams").set_defaults(fn=_cmd_list)
@@ -285,9 +348,18 @@ def main(argv=None) -> int:
                          help="run outside the night window")
     p_night.add_argument("--wait", action="store_true",
                          help="arm now and sleep until the window opens")
-    p_night.add_argument("--max-steps", type=int, default=6, dest="max_steps")
-    p_night.add_argument("--max-minutes", type=int, default=240, dest="max_minutes")
-    p_night.add_argument("--step-timeout", type=int, default=45, dest="step_timeout",
+    p_night.add_argument("--queue", choices=("session", "bmad"), default="session",
+                         help="where the next step comes from: the watched session's last "
+                              "message (default), or a BMAD stories.yaml plan")
+    p_night.add_argument("--window", action="store_true",
+                         help="restrict story mode to the 21:00-07:00 night window "
+                              "(session mode always uses it)")
+    p_night.add_argument("--max-steps", type=int, default=nightshift.DEFAULT_MAX_STEPS,
+                         dest="max_steps")
+    p_night.add_argument("--max-minutes", type=int, default=nightshift.DEFAULT_MAX_MINUTES,
+                         dest="max_minutes")
+    p_night.add_argument("--step-timeout", type=int,
+                         default=nightshift.DEFAULT_STEP_TIMEOUT_MINUTES, dest="step_timeout",
                          help="minutes one continuation may take")
     p_night.add_argument("--since-hours", type=float, dest="since_hours",
                          help="recap only: how far back to read")
@@ -310,9 +382,33 @@ def main(argv=None) -> int:
     p_show.add_argument("--redact", action="store_true")
     p_show.set_defaults(fn=_cmd_show)
 
+    return parser
+
+
+def main(argv=None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
     try:
         return args.fn(args)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    except (bmad.BmadFormatError, FileExistsError, RuntimeError) as exc:
+        # These three are deliberate raises, not bugs: a malformed
+        # stories.yaml (BmadFormatError), a stale worktree directory
+        # (FileExistsError/RuntimeError from swarm.worktree.create), or
+        # run_story_shift re-raising either of those past its own ledger
+        # "end" record (see nightshift.py's `except BaseException as exc: ...
+        # raise`). Before this, all three printed a raw traceback whose exit
+        # status -- Python's default of 1 on an uncaught exception -- was
+        # indistinguishable from the INTENTIONAL "nothing was dispatched"
+        # return of 1 at `_cmd_nightshift`'s last line, breaking the
+        # wrapper-script contract that comment promises. Code 2 here is that
+        # third, distinct outcome: something is wrong and needs a human, as
+        # opposed to 0 (ran, dispatched something) or 1 (ran, declined to).
+        # The ledger is untouched either way -- both callers already record
+        # their own "end"/"refused" entry before an exception like this can
+        # reach here; this only changes what prints and what exit code
+        # follows it.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
