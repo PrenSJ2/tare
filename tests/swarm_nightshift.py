@@ -83,21 +83,28 @@ def test_the_production_check_does_not_fire_on_past_tense_description(text):
     # the guard is the right-hand modifier check, not merely that "record" or
     # "document" happen to be absent from any list.
     "Run the migration guide updates before merging",
-    # The opener is "rotate", which IS in the credential verb list -- proves
+    # The opener is "replace", which IS in the credential verb list -- proves
     # the object (an on-call schedule, not a secret) is what saves it.
-    "Rotate the on-call schedule for next week",
+    "Replace the on-call schedule for next week",
     # The opener is "update", which IS in the .env verb list -- proves the
     # missing value word (not the verb's absence) is what saves it.
     "Update the .env file documentation in the wiki",
 ])
 def test_a_listed_verb_with_a_harmless_object_still_passes(text):
-    """A reviewer flagged the previous version of this test: its openers
+    """A reviewer flagged an earlier version of this test: its openers
     ("Record", "Document") sat outside all three tier-2 verb lists, so it
     proved only that those two words weren't listed, and would have passed
     under any widening of the patterns. These openers are drawn FROM the
     lists the fixes added to, paired with an object the right-hand guard (for
     migration) or the missing value word (for credentials and `.env`) must
     still recognise as harmless.
+
+    "Rotate the on-call schedule" was the original third case here and had to
+    be dropped: `rotate` is no longer in `_ACTION_STEMS` (see
+    `test_a_verb_placed_away_from_line_start_does_not_gain_dispatch` for why),
+    so it now fails the unrelated actionability check instead of proving
+    anything about the credential pattern. `replace` covers the same point
+    without that collision.
     """
     verdict = ns.screen(text)
     assert verdict.ok, f"should have allowed: {text} ({verdict.reason})"
@@ -119,12 +126,24 @@ def test_a_listed_verb_with_a_harmless_object_still_passes(text):
     "Update backend/.env with the live Stripe key",
     "Update config/.env with the live Stripe key",
     "Edit ~/.env and drop the live key in",
+    # `.env.production`/`.env.local` are real secret files, not templates.
+    # A first version of the `.env.example`/`.sample`/`.template` exclusion
+    # left `.production`/`.local` unconsumed rather than rejected, which
+    # silently broke the mandatory whitespace check right after the token and
+    # stopped these two from blocking at all. See `_ENV_TOKEN`.
+    "Update the .env.production with the live key",
+    "Update .env.local with the live Stripe secret",
+    # No key/token/secret/credential/password word anywhere in this sentence
+    # -- what makes it dangerous is "the live database", which is what
+    # `_ENV_VALUE`'s environment-target vocabulary and the uncapped
+    # `_ENV_REACH` (see its comment) exist to catch.
+    "Update the .env so the app talks to the live database",
 ])
 def test_the_gate_refuses_the_forward_looking_shape_with_words_between(text):
     """The fixed patterns tolerate a FEW intervening words and a path prefix,
     not any number of either -- proven separately by
     `test_the_production_check_does_not_fire_on_past_tense_description` and
-    `test_a_verb_with_the_trigger_word_still_passes_when_unrelated`.
+    `test_a_listed_verb_with_a_harmless_object_still_passes`.
     """
     verdict = ns.screen(text)
     assert not verdict.ok, f"should have refused: {text}"
@@ -132,27 +151,71 @@ def test_the_gate_refuses_the_forward_looking_shape_with_words_between(text):
     assert "\n" not in verdict.matched, "a ledger line must not carry a newline"
 
 
+@pytest.mark.parametrize("text", [
+    "Do the deploy tonight",
+    "Start the deploy when the tests are green",
+    "Perform the deploy after the smoke tests",
+    "Start pushing to main",
+    # The literal instruction `screen()`'s own docstring says must never be
+    # given ("'carry on with whatever you like' is precisely the instruction
+    # this must never give").
+    "Do whatever you think is best",
+    "Do it however you like",
+])
+def test_a_verb_placed_away_from_line_start_does_not_gain_dispatch(text):
+    """A regression guard for a hole opened and closed in the same round.
+
+    `do`/`start`/`perform`/`rotate` were added to `_ACTION_STEMS` to make a
+    false-refusal corpus pass end to end, then reverted once a reviewer
+    showed the cost: `Do`/`Start`/`Perform` displace the real production verb
+    out of line-start position, which is exactly where tier 2's
+    forward-looking check requires it to sit to be caught by
+    `_production_hit` -- so these openers both shield a production verb from
+    the production check AND, with the addition in place, satisfied the
+    actionability check anyway, making every sentence here dispatchable.
+    Reverting the addition restores the (accidental, but load-bearing)
+    protection: an opener `names_an_action` does not recognise still ends in
+    "names no action to carry out", regardless of what `_production_hit`
+    does or doesn't catch.
+    """
+    verdict = ns.screen(text)
+    assert not verdict.ok, f"should have refused: {text}"
+
+
 # --- the false-refusal corpus -----------------------------------------------
 #
 # A code review of the first version of these fixes ran a 36-sentence corpus
 # through `screen()` and found 19 wrongly refused -- several of them the
-# exact sentences the two-tier design exists to protect. Below is that
-# corpus, reconstructed from the review: every sentence here is ordinary,
-# harmless work that happens to contain `migration`, `.env`, or a credential
-# verb, and every one of them must pass. See the task report for the
-# before/after refusal count measured against this corpus.
+# exact sentences the two-tier design exists to protect. A second review ran
+# an independent, UNSEEN 50-sentence corpus and found the fix had moved
+# nothing on sentences it wasn't fitted to (9/25 wrongly refused, both
+# before and after) -- the flat number is the important part: it is the
+# reason this file does not claim the false-refusal rate went to zero in
+# general, only that it went to zero ON THE SENTENCES QUOTED BY NAME IN BOTH
+# REVIEWS, which is what is reconstructed below. See the module comment
+# beside `_PRODUCTION_VERBS` for what that distinction is worth and is not
+# worth. See the task report for the full before/after count.
+#
+# Some of these sentences open with a verb `_ACTION_STEMS` does not
+# recognise ("Do", "Start", "Perform") -- on purpose, per
+# `test_a_verb_placed_away_from_line_start_does_not_gain_dispatch` above.
+# Widening that list to make them pass `screen()` end to end was tried and
+# reverted for exactly the reason that test guards. So those sentences are
+# tested against `_production_hit` directly instead, in their own list below,
+# proving the production MATCHER handles them correctly without also
+# claiming they are (or should be) dispatchable instructions.
 
 _MIGRATION_FALSE_REFUSALS = [
     # "migration"/"migrations" as an attributive modifier of something else --
-    # a test suite, a doc, a guide, a naming convention, an audit -- not the
-    # object of the directive verb. All six were refused before the
-    # right-hand guard existed, because `run`/`apply`/`do`/`start`/`perform`
-    # are also some of the commonest openers in `_ACTION_STEMS`.
+    # a test suite, a doc, a naming convention -- not the object of the verb.
     "Run the migrations module tests",
     "Run the migration test fixtures through the new parser",
+    "Apply the migration naming convention to the older files",
+]
+_MIGRATION_FALSE_REFUSALS_MATCHER_ONLY = [
+    # Same shape, opener not in `_ACTION_STEMS` on purpose -- see above.
     "Do the migration docs review before the release notes",
     "Start the migration guide rewrite",
-    "Apply the migration naming convention to the older files",
     "Perform the migration audit and write it up",
 ]
 
@@ -175,6 +238,17 @@ _CLAUSE_BRIDGE_FALSE_REFUSALS = [
     "Update the README; the .env is documented there",
 ]
 
+_CONJUNCTION_FALSE_REFUSALS = [
+    # Same idea, but the clause boundary is "and" rather than punctuation --
+    # only excluded from the migration/credential budget, not `.env`'s (see
+    # `_FEW_WORDS_NO_CONJ`).
+    "Run the tests and the migration is already applied",
+    "Run the linter and the migrations are fine",
+]
+_CONJUNCTION_FALSE_REFUSALS_MATCHER_ONLY = [
+    "Perform the audit and confirm migrations are current",
+]
+
 _STORY_BLOB_FALSE_REFUSALS = [
     # `run_story_shift` screens `f"{title}\n{description}\n{invoke_dev_with}"`
     # as one blob (nightshift.py:1427). A verb in the TITLE used to reach into
@@ -184,30 +258,47 @@ _STORY_BLOB_FALSE_REFUSALS = [
     "Update the docs\nDotenv handling is described in config.py.",
 ]
 
-
-@pytest.mark.parametrize(
-    "text",
-    _MIGRATION_FALSE_REFUSALS + _ENV_FALSE_REFUSALS
-    + _CLAUSE_BRIDGE_FALSE_REFUSALS + _STORY_BLOB_FALSE_REFUSALS,
+_SCREENABLE_CORPUS = (
+    _MIGRATION_FALSE_REFUSALS + _ENV_FALSE_REFUSALS + _CLAUSE_BRIDGE_FALSE_REFUSALS
+    + _CONJUNCTION_FALSE_REFUSALS + _STORY_BLOB_FALSE_REFUSALS
 )
+_MATCHER_ONLY_CORPUS = (
+    _MIGRATION_FALSE_REFUSALS_MATCHER_ONLY + _CONJUNCTION_FALSE_REFUSALS_MATCHER_ONLY
+)
+
+
+@pytest.mark.parametrize("text", _SCREENABLE_CORPUS)
 def test_the_false_refusal_corpus_now_passes(text):
     verdict = ns.screen(text)
     assert verdict.ok, f"should have allowed: {text} ({verdict.reason})"
 
 
+@pytest.mark.parametrize("text", _MATCHER_ONLY_CORPUS)
+def test_the_false_refusal_corpus_matcher_only(text):
+    """The other half of the corpus: sentences the production matcher must
+    clear, whose opener `names_an_action` correctly refuses for an unrelated
+    reason (see `test_a_verb_placed_away_from_line_start_does_not_gain_dispatch`).
+    Asserted against `_production_hit` directly rather than `screen()`, so
+    this test cannot be made to pass by widening `_ACTION_STEMS` again.
+    """
+    assert ns._production_hit(text.lower()) is None, text
+
+
 def test_the_false_refusal_corpus_refusal_rate():
     """The measurement the fix is actually for, not just a pass/fail list.
 
-    Kept as its own test (rather than folding into the parametrized one
-    above) so a regression shows up as a count, which is what a reviewer
-    asked for -- and so CI prints the rate even if every individual case also
-    has its own assertion elsewhere.
+    Kept as its own test (rather than folding into the parametrized ones
+    above) so a regression shows up as a count, which is what was asked for
+    -- and so CI prints the rate even if every individual case also has its
+    own assertion elsewhere. Covers both halves of the corpus, checked the
+    way each half is meant to be checked.
     """
-    corpus = (_MIGRATION_FALSE_REFUSALS + _ENV_FALSE_REFUSALS
-              + _CLAUSE_BRIDGE_FALSE_REFUSALS + _STORY_BLOB_FALSE_REFUSALS)
-    refused = [t for t in corpus if not ns.screen(t).ok]
+    screenable_refused = [t for t in _SCREENABLE_CORPUS if not ns.screen(t).ok]
+    matcher_hits = [t for t in _MATCHER_ONLY_CORPUS if ns._production_hit(t.lower())]
+    refused = screenable_refused + matcher_hits
+    total = len(_SCREENABLE_CORPUS) + len(_MATCHER_ONLY_CORPUS)
     assert refused == [], (
-        f"{len(refused)}/{len(corpus)} descriptive sentences wrongly refused: {refused}")
+        f"{len(refused)}/{total} descriptive sentences wrongly refused: {refused}")
 
 
 @pytest.mark.parametrize("text", [

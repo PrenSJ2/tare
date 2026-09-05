@@ -286,16 +286,26 @@ _PRODUCTION_COMMANDS: tuple[tuple[str, str], ...] = (
 # "Run the auth refactor\nMigrations are already applied on staging" matched,
 # wrongly, because `\s` treats a newline exactly like a space. `[ \t]`
 # doesn't, so the bridge now stops at the line it started on.
-#
-# Deliberately NOT excluded: "and"/"then"/"so" mid-line. That was tried too,
-# to stop a bridge from hopping between two unrelated clauses on one line,
-# and reverted -- it also breaks "Edit ~/.env and drop the live key in",
-# which is one real instruction split by "and" into two halves of the same
-# action and must still refuse. A period, comma, or semicolon still ends the
-# bridge on its own, since none of those are letters; a same-line
-# conjunction joining two related clauses about the same object does not,
-# and that tradeoff is intentional, not an oversight.
 _FEW_WORDS = r"(?:[a-z']+[ \t]+){0,4}"
+
+# The same budget, but "and"/"then"/"so" may not be crossed either -- used
+# ONLY by the migration and credential patterns below, not by `.env`.
+#
+# A global version of this exclusion was tried first and reverted: it also
+# breaks "Edit ~/.env and drop the live key in", which is one real
+# instruction split by "and" into two halves of the SAME action and must
+# still refuse. The `.env` patterns are independently gated by a nearby
+# value word (see `_ENV_VALUE` below), so a stray "and" bridging into an
+# unrelated clause cannot manufacture a match there the way it can for
+# migration/credential, which have no second gate. Applied only to those two,
+# this clears real false refusals -- "Run the tests and the migration is
+# already applied", "Perform the audit and confirm migrations are current" --
+# without reopening the `.env` case. Measured: the plain `_FEW_WORDS` budget
+# of 4 let "the","tests","and","the" all count as filler between "run" and
+# "migration", which is a clause boundary wearing a word count's clothing;
+# excluding the conjunction stops the bridge AT "and", which is where the
+# unrelated clause actually starts.
+_FEW_WORDS_NO_CONJ = r"(?:(?!(?:and|then|so)\b)[a-z']+[ \t]+){0,4}"
 
 # Nouns that turn `migration`/`migrations` into a modifier of something else
 # -- "the migration GUIDE", "migration DOCS", "migrations MODULE tests" --
@@ -316,11 +326,54 @@ _MIGRATION_MODIFIERS = (
 # `backend/.env` or `~/.env`, not only a bare `.env` preceded by whitespace --
 # a real gap: `_FEW_WORDS` cannot cross the `/` in `backend/.env`, so the
 # path-qualified form used to reach none of the patterns below at all.
-# `.env.example`/`.sample`/`.template` are excluded because they are commit-
-# ted placeholder files, not secrets -- editing one is routine.
-_ENV_TOKEN = r"(?:[\w./~-]*\.env|dotenv)(?!\.(?:example|sample|template))\w*"
-_ENV_VALUE = r"(?:key|token|secret|credential|password|value)s?"
+#
+# `.env.example`/`.sample`/`.template` are excluded because they are
+# committed placeholder files, not secrets -- editing one is routine. The
+# exclusion is a hard veto on the WHOLE token, not an optional trailing
+# group: an earlier version wrote it as `(?:\.env|dotenv)(?!\.(?:example|
+# sample|template))\w*`, where the lookahead rejected the suffix but `\w*`
+# still couldn't consume it (a leading `.` isn't a word character), leaving
+# `.env` matched and `.production`/`.local` dangling unconsumed. That silently
+# broke the mandatory whitespace the value-after entry requires right after
+# the token, so `.env.production` and `.env.local` -- real secret files, not
+# templates -- stopped blocking entirely. Fixed by making the token consume
+# ONE trailing `.word` itself (`.production`, `.local`, anything that is not
+# the three excluded names), so the token is either the whole thing or the
+# match fails outright; there is no partial form left over to confuse what
+# comes next.
+_ENV_TOKEN = (
+    r"(?:[\w./~-]*\.env(?!\.(?:example|sample|template)\b)(?:\.\w+)?|dotenv)"
+)
+# A secret by name -- what the credential pattern below looks for.
+_CREDENTIAL_VALUE = r"(?:key|token|secret|credential|password|value)s?"
+# Everything `_CREDENTIAL_VALUE` covers, plus "what production means" for
+# `.env` specifically: repointing a database, a live-mode flag, or an
+# endpoint is exactly the kind of `.env` edit this exists to catch, and none
+# of those words are `key`/`token`/`secret`/`credential`/`password`, so they
+# were missing even though `CONTINUATION_PREAMBLE` already treats "live
+# payment configuration" as the same class of danger as a credential. Kept
+# as its own list rather than folding the extra words into
+# `_CREDENTIAL_VALUE` too: "reset the database" being read as "touches
+# credentials" would be a new false positive nobody asked for, and the
+# credential pattern has no `.env`-shaped reason to widen alongside it.
+_ENV_VALUE = (
+    r"(?:key|token|secret|credential|password|value|"
+    r"live|prod(?:uction)?|database|cluster|url|endpoint)s?"
+)
 _ENV_VERBS = r"(?:update|edit|modify|change|write|set|put|add|store|rotate|swap)"
+# Unlike `_FEW_WORDS`, no upper bound on how many words the verb/token/value
+# may sit apart in a `.env` entry -- "Update the .env so the app talks to
+# the live database" needed 6 words of reach ("so the app talks to the")
+# that a numeric budget would have to keep raising for every new phrasing.
+# Safe to leave uncapped here specifically, in a way it is not for migration
+# or credential: those two have no second gate, so a wide reach alone can
+# manufacture a match out of an unrelated clause (see `_FEW_WORDS_NO_CONJ`).
+# `.env` always requires BOTH a verb governing the token AND a value word
+# nearby, so removing the count cap only lets it search a whole clause for
+# the second half of a pair that must already be there -- and a clause is
+# still where a comma, period, or semicolon stops it, since neither of those
+# is a letter `[a-z']+` will match.
+_ENV_REACH = r"(?:[a-z']+[ \t]+)*"
 
 # Tier 2 — verbs that only block when the sentence is FORWARD-LOOKING. Base
 # form only: `deployed`, `deploying`, `deployment` and `publish-gate` are
@@ -346,10 +399,26 @@ _ENV_VERBS = r"(?:update|edit|modify|change|write|set|put|add|store|rotate|swap)
 # the header comment applied literally: a false refusal costs one night, a
 # false pass costs a database, so the noun forms do not get left out just
 # because handling them correctly takes more than a bare word.
+#
+# What this is NOT: a claim that the false-refusal rate is low, or falling
+# with each round of fixes. It is measured, and the measurement is not
+# flattering. A round of fixes here cleared 19 false refusals from a
+# 36-sentence corpus a reviewer built to find gaps -- and then, on an
+# INDEPENDENT 50-sentence corpus the patterns were never shown, scored the
+# same 9/25 wrongly refused as the version before those fixes. Two cleared,
+# two introduced, net zero, on sentences these patterns hadn't been fitted
+# to. That is the honest ceiling of a keyword-and-shape gate over free-text
+# prose: it can be made to pass any corpus it is shown, and that is not the
+# same thing as getting better at the job. Treat every corpus in
+# `tests/swarm_nightshift.py` as a set of regression guards against the
+# EXACT sentences that were wrong before, not as evidence the gate now
+# generalises. It doesn't, provably, and claiming otherwise here would be the
+# same kind of error `worktree.py` was corrected for making about "fails
+# closed".
 _PRODUCTION_VERBS = (
     (r"deploy", "deploys"), (r"release", "releases"), (r"publish", "publishes"),
     (r"migrate", "runs a migration"), (r"ship\s+(it|this|to)", "ships"),
-    (rf"(?:run|apply|execute|perform|start|do|kick[- ]off|trigger)[ \t]+{_FEW_WORDS}"
+    (rf"(?:run|apply|execute|perform|start|do|kick[- ]off|trigger)[ \t]+{_FEW_WORDS_NO_CONJ}"
      rf"migrations?(?![ \t]+(?:{_MIGRATION_MODIFIERS})\b)",
      "runs a migration"),
     (r"push\s+(to\s+)?(main|master|origin|upstream|remote)", "pushes"),
@@ -358,8 +427,8 @@ _PRODUCTION_VERBS = (
     # regenerate|reissue|reset|generate` covers "put a new one in its place"
     # -- "Replace the leaked production API key" is the same class of danger
     # and was reaching neither list before.
-    (rf"(?:rotate|revoke|replace|regenerate|reissue|reset|generate)[ \t]+{_FEW_WORDS}"
-     rf"{_ENV_VALUE}", "touches credentials"),
+    (rf"(?:rotate|revoke|replace|regenerate|reissue|reset|generate)[ \t]+{_FEW_WORDS_NO_CONJ}"
+     rf"{_CREDENTIAL_VALUE}", "touches credentials"),
     (r"charge\s+(the\s+|a\s+)?(card|customer|user|guest)", "takes a payment"),
     (r"go\s+live", "goes live"),
     (r"email\s+(the\s+|our\s+)?(customers?|users?|guests?|hosts?)", "contacts people"),
@@ -372,9 +441,9 @@ _PRODUCTION_VERBS = (
     # redesign exists to fix. Two entries, value-before and value-after,
     # because the value word can sit on either side: "write the new
     # credentials into the .env file" vs "update the .env with the live key".
-    (rf"{_ENV_VERBS}[ \t]+{_FEW_WORDS}{_ENV_VALUE}[ \t]+{_FEW_WORDS}{_ENV_TOKEN}",
+    (rf"{_ENV_VERBS}[ \t]+{_ENV_REACH}{_ENV_VALUE}[ \t]+{_ENV_REACH}{_ENV_TOKEN}",
      "touches a .env file"),
-    (rf"{_ENV_VERBS}[ \t]+{_FEW_WORDS}{_ENV_TOKEN}[ \t]+{_FEW_WORDS}{_ENV_VALUE}",
+    (rf"{_ENV_VERBS}[ \t]+{_ENV_REACH}{_ENV_TOKEN}[ \t]+{_ENV_REACH}{_ENV_VALUE}",
      "touches a .env file"),
 )
 
@@ -449,14 +518,23 @@ _ACTION_STEMS = (
     "batch", "retry", "seed", "sort", "group", "swap", "raise", "lower",
     "widen", "narrow", "prefer", "switch", "keep", "show", "print", "emit",
     "track", "stub", "assert", "drop", "merge", "skip", "collapse", "hoist",
-    # A third pass, found the same way: a false-refusal corpus built for the
-    # `.env`/migration/credential gate fixes above contained real instructions
-    # -- "Start the migration guide rewrite", "Do the migration docs review",
-    # "Perform the migration audit", "Rotate the on-call schedule" -- that the
-    # PRODUCTION check correctly let through and this list then refused
-    # anyway, for an unrelated reason, because none of these four verbs had
-    # ever been added.
-    "do", "start", "perform", "rotate",
+    # `do`, `start`, `perform`, and `rotate` were added here and then reverted
+    # in the same round: a false-refusal corpus made "Start the migration
+    # guide rewrite" pass end to end look like an improvement, but the same
+    # four words also make "Do the deploy tonight", "Start pushing to main",
+    # and "Do whatever you think is best" dispatchable -- the last of which
+    # is the exact instruction `screen()`'s own docstring says must never be
+    # given. Worse: `Do`/`Start`/`Perform` displace the real verb out of
+    # line-start position, which is where tier 2's forward-looking check
+    # requires it to sit, so these openers both shield a production verb
+    # from the production check AND, with the addition, satisfied the
+    # actionability check anyway. A sentence whose opener isn't recognized
+    # here is tested against `_production_hit` in isolation instead (see
+    # `test_the_production_check_does_not_fire_on_past_tense_description`
+    # and the false-refusal corpus below) -- that proves the production
+    # matcher is right without also being forced to prove the opener is a
+    # verb, which is a separate, unrelated property this list is not the
+    # place to loosen just to make an end-to-end assertion shorter.
 )
 
 
