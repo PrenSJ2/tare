@@ -54,6 +54,61 @@ def test_the_gate_refuses_anything_touching_production(text):
 
 
 @pytest.mark.parametrize("text", [
+    # A real, measured false refusal (see the module comment): a Dart
+    # refactor, described after the fact, not an instruction to run one.
+    "the first migration is in",
+    # Base-form-only matching already excludes the past tense on its own --
+    # "rotate" does not match "rotated" -- and this proves it still holds now
+    # that the pattern tolerates intervening words.
+    "we rotated the key last week",
+    # ".env" sits in tier 2 precisely so this sentence is not a refusal.
+    "the .env is documented in the README",
+])
+def test_the_production_check_does_not_fire_on_past_tense_description(text):
+    """Isolates the tier-2 matcher itself from `names_an_action`.
+
+    Every one of these also fails `screen()` outright, correctly, for an
+    unrelated reason: none of them names work to do (see
+    `test_status_prose_is_refused_however_long_it_is`). That is not the
+    property being tested here -- the property is that `_production_hit`
+    does not mistake the description for an instruction, which is what the
+    two-tier design is for and what regresses if `migration`, `rotate`, or
+    `.env` are ever matched bare instead of via their forward-looking shape.
+    """
+    assert ns._production_hit(text.lower()) is None, text
+
+
+@pytest.mark.parametrize("text", [
+    "Record that the first migration is in and move on",
+    "Document that we rotated the key last week",
+    "Document that the .env file is explained in the README already",
+])
+def test_past_tense_description_passes_the_whole_gate_when_actionable(text):
+    """Same three sentences, wrapped so `names_an_action` also agrees there is
+    work here -- proving the gate as a whole, not just the matcher in
+    isolation, still lets ordinary descriptive prose through.
+    """
+    verdict = ns.screen(text)
+    assert verdict.ok, f"should have allowed: {text} ({verdict.reason})"
+
+
+@pytest.mark.parametrize("text", [
+    "Run migrations against the staging database first",
+    "Kick off the pending migrations before the release",
+    "Rotate our production credential immediately",
+    "Update the production .env with new secrets",
+])
+def test_the_gate_refuses_the_forward_looking_shape_with_words_between(text):
+    """The three fixed patterns tolerant of a FEW intervening words, not any
+    number of them -- proven separately by
+    `test_the_production_check_does_not_fire_on_past_tense_description`.
+    """
+    verdict = ns.screen(text)
+    assert not verdict.ok, f"should have refused: {text}"
+    assert verdict.matched, "a refusal must name the phrase that caused it"
+
+
+@pytest.mark.parametrize("text", [
     "Add a test for the empty-input case in parser.py",
     "Refactor the duplicated validation into a helper",
     "Fix the failing assertion in test_reader.py and re-run the suite",

@@ -269,18 +269,58 @@ _PRODUCTION_COMMANDS: tuple[tuple[str, str], ...] = (
     (r"\brm\s+-rf\b", "deletes recursively"),
 )
 
+# A handful of words, not a sentence. Bridges "rotate the API key" and "run
+# the database migration" without reaching far enough to swallow the next
+# clause. Tried first as `.*` between verb and object; that matched cleanly
+# across sentence boundaries too, which is the opposite of what this needs,
+# so it was walked back to a bounded budget of ordinary words. `[a-z']+\s+`
+# demands an actual word followed by actual whitespace, so a period or comma
+# breaks the chain rather than being swallowed by it -- the bound is not just
+# a count, it is punctuation-aware for free.
+_FEW_WORDS = r"(?:[a-z']+\s+){0,3}"
+
 # Tier 2 — verbs that only block when the sentence is FORWARD-LOOKING. Base
-# form only: `deployed`, `deploying`, `deployment`, `migration` and
-# `publish-gate` are descriptions, not intentions.
+# form only: `deployed`, `deploying`, `deployment` and `publish-gate` are
+# descriptions, not intentions -- matching the exact word `migrate` or
+# `rotate` already excludes `migrated` and `rotated` the same way a bare-word
+# match always has.
+#
+# `migration`/`migrations` is the one entry below that is a NOUN rather than a
+# verb, and it earns a different shape because of it. "the first migration is
+# in" (a real, measured false refusal -- see the module comment above) is
+# past tense wearing a present-tense-looking noun, and no tense trick
+# distinguishes it from "Run the database migration for the new column",
+# which must block. What DOES distinguish them is whether a directive verb
+# governs the noun: the first sentence has none, the second is governed by
+# "Run". So the pattern requires one of a short list of directive verbs --
+# run, apply, execute, perform, start, do, kick off, trigger -- within a few
+# words of `migrations?`, rather than matching the noun on its own. A past-
+# tense description has nothing governing the noun and passes; an instruction
+# to run one does not. This is the asymmetry from the header comment applied
+# literally: a false refusal costs one night, a false pass costs a database,
+# so the noun form does not get left out just because handling it correctly
+# takes more than a bare word.
 _PRODUCTION_VERBS = (
     (r"deploy", "deploys"), (r"release", "releases"), (r"publish", "publishes"),
     (r"migrate", "runs a migration"), (r"ship\s+(it|this|to)", "ships"),
+    (rf"(?:run|apply|execute|perform|start|do|kick[- ]off|trigger)\s+{_FEW_WORDS}migrations?",
+     "runs a migration"),
     (r"push\s+(to\s+)?(main|master|origin|upstream|remote)", "pushes"),
     (r"merge\s+(to\s+|into\s+)?(main|master)", "merges to a default branch"),
-    (r"(rotate|revoke)\s+(the\s+|a\s+)?(key|token|secret|credential)", "touches credentials"),
+    (rf"(rotate|revoke)\s+{_FEW_WORDS}(key|token|secret|credential)s?", "touches credentials"),
     (r"charge\s+(the\s+|a\s+)?(card|customer|user|guest)", "takes a payment"),
     (r"go\s+live", "goes live"),
     (r"email\s+(the\s+|our\s+)?(customers?|users?|guests?|hosts?)", "contacts people"),
+    # `.env` is not ordinary prose the way `deploy` is -- nobody writes the
+    # string by accident -- which argues for tier 1. It sits in tier 2 anyway,
+    # because "the .env is documented in the README" is exactly the sentence
+    # this tier exists to let through: true, harmless, and containing the
+    # string regardless. What is dangerous is WRITING to it, so this matches
+    # a verb that changes something -- update, edit, modify, write, set, put,
+    # add, store, rotate, swap -- within a few words of `.env`/`dotenv`, the
+    # same shape as the migration entry above and for the same reason.
+    (rf"(?:update|edit|modify|change|write|set|put|add|store|rotate|swap)\s+{_FEW_WORDS}"
+     r"(?:\.env\b|dotenv\b)", "touches a .env file"),
 )
 
 # What makes a sentence forward-looking. The verb must follow one of these
