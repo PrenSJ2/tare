@@ -1408,6 +1408,24 @@ def recap(entries: list[dict]) -> str:
     Refusals are given the same weight as work. A shift that refused
     everything did its job, and a recap that buried that under "0 commits"
     would read as a failure.
+
+    ## Story mode
+
+    `run_story_shift` writes a different vocabulary than `run_shift` does --
+    it has no `continued` step, because a story is not "continue with this
+    prose", it is "verified, parked, or still running". The events handled
+    below are every one this file's story-mode code was found to emit, by
+    reading `run_story_shift`, `push_branch`, `open_pr`, and `queue.py`
+    (`VERIFIED_EVENT`/`PARKED_EVENT`, reproduced here as literals rather than
+    imported, since `queue` imports THIS module and a module-level import back
+    would be the cycle its own docstring warns about):
+    `start`/`end` (carrying `mode: "bmad"`), the shared `refused` (no BMAD
+    install, wrong branch, another shift running -- no story-specific fields),
+    `story-skipped`, `story-parked`, `story-verified`, `push-failed`,
+    `pr-failed`, `worktree-left`. That is the full list as of this writing --
+    it is NOT a claim that a future event name is handled; an event this
+    function does not recognise below simply produces no line, which is a
+    silent gap worth checking for the next time either file changes.
     """
     if not entries:
         return ("nothing recorded.\n"
@@ -1419,6 +1437,15 @@ def recap(entries: list[dict]) -> str:
     would = [e for e in entries if e.get("event") == "would-continue"]
     ends = [e for e in entries if e.get("event") == "end"]
 
+    # Story-mode's vocabulary. Named as string literals rather than
+    # `queue.VERIFIED_EVENT`/`queue.PARKED_EVENT` for the reason above.
+    story_verified = [e for e in entries if e.get("event") == "story-verified"]
+    story_parked = [e for e in entries if e.get("event") == "story-parked"]
+    story_skipped = [e for e in entries if e.get("event") == "story-skipped"]
+    push_failed = [e for e in entries if e.get("event") == "push-failed"]
+    pr_failed = [e for e in entries if e.get("event") == "pr-failed"]
+    worktree_left = [e for e in entries if e.get("event") == "worktree-left"]
+
     commits = [c for e in continued for c in e.get("commits", [])]
     failed = [e for e in continued if e.get("exit_code")]
 
@@ -1428,13 +1455,31 @@ def recap(entries: list[dict]) -> str:
     ]
     if failed:
         lines.append(f"{len(failed)} continuation(s) exited non-zero")
+    # A second summary line, added only when there is a story to tell --
+    # a session-only ledger has all six lists empty and this whole block
+    # produces nothing, which is what keeps that recap's output unchanged.
+    if story_verified or story_parked or story_skipped or push_failed or pr_failed or worktree_left:
+        story_summary = (f"{len(story_verified)} stor{'y' if len(story_verified) == 1 else 'ies'} "
+                         f"verified, {len(story_parked)} parked, {len(story_skipped)} skipped")
+        if push_failed:
+            story_summary += f", {len(push_failed)} push failure(s)"
+        if pr_failed:
+            story_summary += f", {len(pr_failed)} PR failure(s)"
+        if worktree_left:
+            story_summary += f", {len(worktree_left)} worktree(s) left on disk"
+        lines.append(story_summary)
     lines.append("")
 
     for entry in entries:
         stamp = entry.get("at", "")[:16].replace("T", " ")
         event = entry.get("event")
         if event == "start":
-            lines.append(f"{stamp}  ── shift on {entry.get('branch')} "
+            # Same line shape either way -- only the label changes, and it
+            # changes to "shift" (the literal that was already here) for
+            # every entry without `mode: "bmad"`, which is what keeps a
+            # session-only recap byte-identical to before this branch existed.
+            label = "story shift" if entry.get("mode") == "bmad" else "shift"
+            lines.append(f"{stamp}  ── {label} on {entry.get('branch')} "
                          f"in {Path(entry.get('repo', '')).name}"
                          f"{'' if entry.get('apply') else '  (dry run)'}")
         elif event == "continued":
@@ -1463,10 +1508,78 @@ def recap(entries: list[dict]) -> str:
                 lines.append(f"                       matched: {entry['matched']!r}")
         elif event == "would-continue":
             lines.append(f"{stamp}  ·· would continue with: {entry.get('recommendation')}")
+        elif event == "story-skipped":
+            lines.append(f"{stamp}  ·· skipped {entry.get('story_key')}: {entry.get('reason')}")
+        elif event == "story-parked":
+            # `reason` already says WHICH of the three things this is -- a gate
+            # refusal ("the recommendation deploys"), a blocked outcome
+            # ("blocked: <error_code>"), or an unverified verdict ("not
+            # verified: ..." / "verified but the push failed: ..."). That
+            # distinction is the whole point (see the module docstring's "The
+            # ledger is the product"), so it is passed through rather than
+            # collapsed into one "parked" word with the detail hidden below.
+            lines.append(f"{stamp}  ✋ parked {entry.get('story_key')}: {entry.get('reason')}")
+            if entry.get("matched"):
+                lines.append(f"                       matched: {entry['matched']!r}")
+            for unmet in entry.get("unmet") or []:
+                lines.append(f"                       unmet: {unmet}")
+            if entry.get("detail"):
+                lines.append(f"                       {entry['detail']}")
+            if entry.get("branch"):
+                lines.append(f"                       branch: {entry['branch']}")
+            tail = (entry.get("tail") or "").strip().splitlines()
+            for tail_line in tail[-3:]:
+                lines.append(f"                       ! {tail_line[:88]}")
+        elif event == "story-verified":
+            lines.append(f"{stamp}  ok  verified {entry.get('story_key')}: {entry.get('reason')}")
+            if entry.get("branch"):
+                lines.append(f"                       branch: {entry['branch']}")
+            if entry.get("pr"):
+                lines.append(f"                       PR: {entry['pr']}")
+            else:
+                # `story-verified` only exists when the push succeeded (see
+                # `run_story_shift` -- a failed push is recorded as
+                # `story-parked` instead), so an empty `pr` here means the
+                # push landed and `open_pr` failed. That combination -- a
+                # verified, pushed story nobody can find a PR for -- is
+                # exactly the kind of gap this recap must not bury; the
+                # matching `pr-failed` entry (recorded just before this one)
+                # carries the reason.
+                lines.append("                       !! no PR opened -- see the pr-failed "
+                             "entry above for why")
+        elif event == "push-failed":
+            lines.append(f"{stamp}  !! push failed for {entry.get('story_key')} "
+                         f"({entry.get('branch')})")
+            if entry.get("stderr"):
+                lines.append(f"                       {entry['stderr'][:300]}")
+        elif event == "pr-failed":
+            lines.append(f"{stamp}  !! PR failed for {entry.get('story_key')} "
+                         f"({entry.get('branch')})")
+            if entry.get("stderr"):
+                lines.append(f"                       {entry['stderr'][:300]}")
+        elif event == "worktree-left":
+            # Not a status line: this means a tree is still on disk holding
+            # uncommitted work, and tomorrow's `wt_module.create` for the same
+            # slug will raise `FileExistsError` because of it. Said plainly
+            # rather than folded into the story's own parked/verified line, so
+            # it cannot be read as routine cleanup.
+            lines.append(f"{stamp}  !! WORKTREE LEFT ON DISK: {entry.get('path')} "
+                         f"({entry.get('story_key')}) -- clear this before the next run")
+            if entry.get("detail"):
+                lines.append(f"                       {entry['detail']}")
         elif event == "end":
             lines.append(f"{stamp}  ── ended: {entry.get('reason')}")
 
-    if ends and not continued and not would:
+    # Fires only when NOTHING acted on anything -- no continuation, no
+    # dry-run preview, and no story ever reached the queue's verified/parked/
+    # push/PR/worktree stages. A story-mode night that parked or verified at
+    # least one story is not "nothing was dispatched": something ran, the
+    # record above says what and why, and this line would be false if it
+    # printed alongside that record. Session-mode ledgers leave all six story
+    # lists empty, so this condition reduces to exactly what it was before.
+    if (ends and not continued and not would and not story_verified
+            and not story_parked and not push_failed and not pr_failed
+            and not worktree_left):
         lines.append("")
         lines.append("Nothing was dispatched. A refusal is the gate working, not a failure.")
     return "\n".join(lines)

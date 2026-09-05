@@ -1763,3 +1763,211 @@ def test_a_success_in_the_middle_resets_the_consecutive_failure_count(
         "the two runs of failures -- the counter did not reset")
     assert shift.ended == "no story left to run"
     assert len(shift.steps) == 5, "all five stories should have been attempted"
+
+
+# --- recap: story mode --------------------------------------------------------
+#
+# `recap` used to be blind to every event `run_story_shift` writes: it only
+# ever looked for `continued`, so a story-mode night -- which has no such
+# event -- always fell into the trailing "Nothing was dispatched" branch,
+# even on a night that verified a story and opened a PR. The tests below
+# pin the fix event by event, using the exact ledger shapes `run_story_shift`,
+# `push_branch`, and `open_pr` are shown above (search this file for
+# `queue.VERIFIED_EVENT` / `queue.PARKED_EVENT`) to actually write.
+
+def test_session_only_recap_is_byte_identical_to_before_story_mode(swarm_home):
+    """The pinning test the task asked for.
+
+    This exact string was captured by running the OLD `recap` -- the version
+    at HEAD before this change, extracted and executed standalone -- against
+    this exact entry list. If a future edit to the story-mode branches below
+    changes so much as one space in a session-only recap, this is the test
+    that catches it.
+    """
+    entries = [
+        {"at": "2026-09-04T21:05:00", "event": "start", "repo": "/x/proj",
+         "branch": "feature/x", "apply": True},
+        {"at": "2026-09-04T21:10:00", "event": "continued",
+         "recommendation": "Add a test for the parser", "exit_code": 0,
+         "commits": ["abc1234 test: cover empty input"], "changed": True,
+         "tail": "2 passed"},
+        {"at": "2026-09-04T21:40:00", "event": "continued",
+         "recommendation": "Fix the flaky retry logic", "exit_code": 1, "commits": [],
+         "changed": False, "tail": "FAILED tests/test_retry.py::test_backoff"},
+        {"at": "2026-09-04T22:00:00", "event": "refused",
+         "reason": "the recommendation deploys", "matched": "deploy",
+         "recommendation": "Deploy the fix to production"},
+        {"at": "2026-09-04T22:00:01", "event": "end", "reason": "gate refused", "steps": 3},
+    ]
+    expected = (
+        "1 shift(s), 2 continuation(s), 1 commit(s), 1 refusal(s)\n"
+        "1 continuation(s) exited non-zero\n"
+        "\n"
+        "2026-09-04 21:05  ── shift on feature/x in proj\n"
+        "2026-09-04 21:10  ok  Add a test for the parser\n"
+        "                       + abc1234 test: cover empty input\n"
+        "2026-09-04 21:40  E1 Fix the flaky retry logic\n"
+        "                       ! FAILED tests/test_retry.py::test_backoff\n"
+        "2026-09-04 22:00  ✋ the recommendation deploys\n"
+        "                       for: Deploy the fix to production\n"
+        "                       matched: 'deploy'\n"
+        "2026-09-04 22:00  ── ended: gate refused"
+    )
+    assert ns.recap(entries) == expected
+
+
+def test_recap_never_says_nothing_was_dispatched_when_a_story_was_verified(swarm_home):
+    """The bug this task exists to fix: this branch used to fire on EVERY
+    story-mode night, because it only ever checked for `continued`."""
+    entries = [
+        {"at": "2026-09-04T22:00:00", "event": "start", "mode": "bmad",
+         "repo": "/x/proj", "branch": "feature/x", "apply": True},
+        {"at": "2026-09-04T22:15:00", "event": "story-verified",
+         "story_key": "spec-alpha/1", "branch": "nightshift/spec-alpha-1",
+         "files": ["a.py"], "reason": "acceptance criteria hold",
+         "pushed": True, "pr": "https://example.invalid/pull/1", "seconds": 300},
+        {"at": "2026-09-04T22:15:01", "event": "end", "mode": "bmad",
+         "reason": "no story left to run", "steps": 1},
+    ]
+    out = ns.recap(entries)
+    assert "Nothing was dispatched" not in out
+    assert "verified spec-alpha/1" in out
+    assert "acceptance criteria hold" in out
+    assert "https://example.invalid/pull/1" in out
+
+
+def test_recap_labels_the_start_line_a_story_shift(swarm_home):
+    entries = [{"at": "2026-09-04T22:00:00", "event": "start", "mode": "bmad",
+                "repo": "/x/proj", "branch": "feature/x", "apply": True}]
+    out = ns.recap(entries)
+    assert "story shift on feature/x in proj" in out
+
+
+def test_a_parked_story_shows_which_of_the_three_reasons_it_was(swarm_home):
+    """A gate refusal, a blocked outcome, and an unverified verdict must read
+    as three different things, not one undifferentiated "parked"."""
+    gate = ns.recap([{"at": "2026-09-04T22:00:00", "event": "story-parked",
+                      "story_key": "spec-alpha/1", "reason": "the recommendation deploys",
+                      "matched": "deploy"}])
+    assert "the recommendation deploys" in gate
+    assert "matched: 'deploy'" in gate
+
+    blocked = ns.recap([{"at": "2026-09-04T22:00:00", "event": "story-parked",
+                         "story_key": "spec-alpha/2", "reason": "blocked: insufficient_intent",
+                         "detail": "too thin to distill", "branch": "nightshift/spec-alpha-2"}])
+    assert "blocked: insufficient_intent" in blocked
+    assert "too thin to distill" in blocked
+
+    unverified = ns.recap([{"at": "2026-09-04T22:00:00", "event": "story-parked",
+                            "story_key": "spec-alpha/3",
+                            "reason": "not verified: missing test coverage",
+                            "unmet": ["no test for the 429 path"],
+                            "branch": "nightshift/spec-alpha-3", "pushed": True}])
+    assert "not verified: missing test coverage" in unverified
+    assert "no test for the 429 path" in unverified
+
+
+def test_a_verified_story_with_a_failed_push_is_impossible_to_miss(swarm_home):
+    """`run_story_shift` never emits `story-verified` for a story whose push
+    failed -- that combination is recorded as `story-parked` instead, with a
+    reason that says both facts at once. Pinning that the WORDS survive into
+    the recap, since that is the exact scenario the task calls out."""
+    out = ns.recap([{"at": "2026-09-04T22:00:00", "event": "story-parked",
+                     "story_key": "spec-alpha/1",
+                     "reason": "verified but the push failed: acceptance criteria hold",
+                     "branch": "nightshift/spec-alpha-1", "pushed": False}])
+    assert "verified but the push failed" in out
+
+
+def test_a_verified_story_with_no_pr_flags_it_rather_than_looking_clean(swarm_home):
+    """Push can succeed while `gh pr create` fails -- `story-verified` still
+    fires (see `run_story_shift`), but with an empty `pr`. That must not
+    render as a clean success."""
+    out = ns.recap([{"at": "2026-09-04T22:00:00", "event": "pr-failed",
+                     "story_key": "spec-alpha/1", "branch": "nightshift/spec-alpha-1",
+                     "stderr": "gh: authentication required"},
+                    {"at": "2026-09-04T22:00:01", "event": "story-verified",
+                     "story_key": "spec-alpha/1", "branch": "nightshift/spec-alpha-1",
+                     "files": ["a.py"], "reason": "acceptance criteria hold",
+                     "pushed": True, "pr": "", "seconds": 300}])
+    assert "no PR opened" in out
+    assert "gh: authentication required" in out
+
+
+def test_push_failed_is_rendered_not_silent(swarm_home):
+    out = ns.recap([{"at": "2026-09-04T22:00:00", "event": "push-failed",
+                     "story_key": "spec-alpha/1", "branch": "nightshift/spec-alpha-1",
+                     "stderr": "! [remote rejected] refusing non-nightshift ref"}])
+    assert "push failed" in out
+    assert "spec-alpha/1" in out
+    assert "refusing non-nightshift ref" in out
+
+
+def test_worktree_left_reads_as_a_problem_not_a_status_line(swarm_home):
+    """A left-behind worktree means tomorrow's `create` will refuse for the
+    same slug -- that consequence must be stated, not just the fact of it."""
+    out = ns.recap([{"at": "2026-09-04T22:00:00", "event": "worktree-left",
+                     "story_key": "spec-alpha/1", "branch": "nightshift/spec-alpha-1",
+                     "path": "/tmp/worktrees/spec-alpha-1",
+                     "detail": "left in place: /tmp/worktrees/spec-alpha-1 has uncommitted changes"}])
+    assert "WORKTREE LEFT ON DISK" in out
+    assert "/tmp/worktrees/spec-alpha-1" in out
+    assert "clear this before the next run" in out
+
+
+def test_story_skipped_is_rendered(swarm_home):
+    out = ns.recap([{"at": "2026-09-04T22:00:00", "event": "story-skipped",
+                     "story_key": "spec-alpha/4",
+                     "reason": "parked 3 times already"}])
+    assert "skipped spec-alpha/4" in out
+    assert "parked 3 times already" in out
+
+
+def test_a_realistic_story_night_summarises_truthfully(swarm_home):
+    """One verified, one parked (blocked), one skipped, a worktree left
+    behind -- the shape the task describes as a realistic night. Nothing in
+    the summary line may undercount what happened."""
+    entries = [
+        {"at": "2026-09-04T22:00:00", "event": "start", "mode": "bmad",
+         "repo": "/x/proj", "branch": "feature/x", "apply": True},
+        {"at": "2026-09-04T22:00:01", "event": "story-skipped",
+         "story_key": "spec-alpha/2",
+         "reason": "spec_checkpoint is set and nobody is here to review it"},
+        {"at": "2026-09-04T22:15:00", "event": "story-verified",
+         "story_key": "spec-alpha/1", "branch": "nightshift/spec-alpha-1",
+         "files": ["a.py"], "reason": "acceptance criteria hold",
+         "pushed": True, "pr": "https://example.invalid/pull/1", "seconds": 300},
+        {"at": "2026-09-04T22:40:00", "event": "story-parked",
+         "story_key": "spec-alpha/3", "reason": "blocked: insufficient_intent",
+         "detail": "too thin to distill", "branch": "nightshift/spec-alpha-3"},
+        {"at": "2026-09-04T23:00:00", "event": "worktree-left",
+         "story_key": "spec-alpha/3", "branch": "nightshift/spec-alpha-3",
+         "path": "/tmp/worktrees/spec-alpha-3",
+         "detail": "left in place: /tmp/worktrees/spec-alpha-3 has uncommitted changes"},
+        {"at": "2026-09-04T23:01:00", "event": "end", "mode": "bmad",
+         "reason": "no story left to run", "steps": 3},
+    ]
+    out = ns.recap(entries)
+    assert "Nothing was dispatched" not in out
+    assert "1 story verified, 1 parked, 1 skipped" in out
+    assert "1 worktree(s) left on disk" in out
+
+
+def test_recap_of_a_real_story_shift_ledger_reads_truthfully(swarm_home, tmp_path, monkeypatch):
+    """End to end: run a real `run_story_shift` (verified + PR) and feed its
+    actual ledger straight into `recap`, rather than a hand-built fixture."""
+    from swarm import queue
+    repo = _bmad_repo(tmp_path, ONE_STORY)
+    _with_origin(repo)
+    bin_dir = _fake_claude(tmp_path)
+    _fake_gh(tmp_path, ok=True)
+    _on_path(monkeypatch, bin_dir)
+    monkeypatch.setenv("TARE_TEST_OUTCOME", "complete")
+    monkeypatch.setenv("TARE_TEST_VERIFIED", "true")
+
+    ns.run_story_shift(repo, apply=True)
+
+    out = ns.recap(ns.read_ledger())
+    assert "Nothing was dispatched" not in out
+    assert "verified spec-alpha/1" in out
+    assert "https://example.invalid/pull/1" in out
