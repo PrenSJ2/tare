@@ -369,3 +369,22 @@ def main(argv=None) -> int:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    except (bmad.BmadFormatError, FileExistsError, RuntimeError) as exc:
+        # These three are deliberate raises, not bugs: a malformed
+        # stories.yaml (BmadFormatError), a stale worktree directory
+        # (FileExistsError/RuntimeError from swarm.worktree.create), or
+        # run_story_shift re-raising either of those past its own ledger
+        # "end" record (see nightshift.py's `except BaseException as exc: ...
+        # raise`). Before this, all three printed a raw traceback whose exit
+        # status -- Python's default of 1 on an uncaught exception -- was
+        # indistinguishable from the INTENTIONAL "nothing was dispatched"
+        # return of 1 at `_cmd_nightshift`'s last line, breaking the
+        # wrapper-script contract that comment promises. Code 2 here is that
+        # third, distinct outcome: something is wrong and needs a human, as
+        # opposed to 0 (ran, dispatched something) or 1 (ran, declined to).
+        # The ledger is untouched either way -- both callers already record
+        # their own "end"/"refused" entry before an exception like this can
+        # reach here; this only changes what prints and what exit code
+        # follows it.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
