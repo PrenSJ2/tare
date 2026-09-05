@@ -190,13 +190,20 @@ DENIED_TOOLS = (
 # that a night's work lands as a PR, on a namespaced branch, for a human to
 # read.
 #
-# Unverified: whether a subagent spawned via the `Task` tool (granted below)
-# inherits this process's --allowedTools/--disallowedTools, or runs under
-# some default of its own. If it does not inherit them, the entire deny list
-# is bypassable by spawning one subagent. Not checked against the real CLI
-# yet -- next person to touch this, check it before relying on the list.
+# `Task` is deliberately NOT in this list. It was granted in an earlier
+# version on the assumption that a subagent spawned via `Task` inherits this
+# process's --allowedTools/--disallowedTools -- an assumption nobody had
+# verified against the real CLI. An unverified safety assumption is not a
+# control: if a spawned subagent does NOT inherit this policy (or runs under
+# some default of its own), the entire deny list above is bypassable by
+# spawning one. A story implementation does not need to spawn subagents, so
+# removing `Task` costs nothing and is the conservative default until that
+# inheritance question is settled. To restore it: verify, against the real
+# CLI, that a `Task`-spawned subagent is actually bound by the parent's
+# --allowedTools/--disallowedTools (not merely by inference from
+# documentation), and record the result here.
 WIDE_TOOLS = (
-    "Read", "Glob", "Grep", "Write", "Edit", "TodoWrite", "Task", "Skill",
+    "Read", "Glob", "Grep", "Write", "Edit", "TodoWrite", "Skill",
     "WebFetch", "WebSearch",
     "Bash",
     "Bash(git push:*)", "Bash(gh pr create:*)",

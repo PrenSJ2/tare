@@ -1274,6 +1274,16 @@ def test_the_wide_policy_permits_what_it_was_widened_for():
         assert capability in joined, f"{capability} missing from the widened policy"
 
 
+def test_task_is_not_in_the_wide_policy():
+    """Whether a Task-spawned subagent inherits the parent's
+    --allowedTools/--disallowedTools is unverified against the real CLI. An
+    unverified safety assumption is not a control, so `Task` stays out until
+    that inheritance question is settled -- a story implementation does not
+    need to spawn subagents, and this regression guard is what stops it
+    quietly coming back."""
+    assert "Task" not in ns.WIDE_TOOLS
+
+
 def test_the_wide_denylist_does_not_deny_what_the_wide_policy_grants():
     """WIDE_DENIED_TOOLS must not be derived from DENIED_TOOLS.
 
