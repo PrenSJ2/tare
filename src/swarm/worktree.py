@@ -254,15 +254,28 @@ def dispose(tree: Worktree, *, force: bool = False) -> str:
 def orphans(repo: Path) -> list[tuple[Path, str]]:
     """Worktrees a shift never cleaned up, however they got left that way.
 
-    Matches on two, independent signals: a worktree whose branch is still
-    under `refs/heads/nightshift/`, OR a worktree whose directory sits under
-    `worktrees_root(repo)` -- the directory only `create` ever populates.
-    The second signal exists because the first is not reliable: an agent
-    that runs `git checkout --detach`, or renames or deletes its branch,
-    makes the tree invisible to a branch-only check while the directory
-    (and whatever it pushed, or didn't) stays right where `create` left it.
-    `create`'s own refusal to reuse an existing directory points an operator
-    here, so silently under-reporting is worse than reporting too much.
+    Two signals, and they used to only LOOK independent. The docstring here
+    used to claim a worktree matches if its branch is under
+    `refs/heads/nightshift/` OR its directory sits under
+    `worktrees_root(repo)` -- stated as if the second were a filesystem
+    check. It was not: both were applied only inside `flush()`, to paths
+    `git worktree list --porcelain` yielded. A directory git's own
+    bookkeeping no longer lists reaches NEITHER signal -- not the branch
+    check (no `branch ` line for it) and not the "under root" check (no
+    `worktree ` line for it either, so `flush` is never even called with its
+    path). Verified: an unregistered leftover directory under
+    `worktrees_root(repo)` gives `orphans() == []`, and `swarm doctor` reports
+    a clean bill of health, while `create` raises `FileExistsError` on that
+    same path forever -- the exact diagnostic `create`'s own error message
+    sends an operator here to find, silently missing.
+
+    Fixed by making the directory signal real: after the porcelain pass, this
+    also lists `worktrees_root(repo)` directly off disk, and reports any
+    directory found there that the porcelain pass did not already report --
+    tagged `"untracked"` rather than a branch name, since by definition git no
+    longer has one to give. That second pass depends on nothing but the
+    filesystem, which is what makes it a genuinely separate check rather than
+    the same one applied twice.
     """
     result = _git(repo, "worktree", "list", "--porcelain")
     if result.returncode != 0:
@@ -280,13 +293,19 @@ def orphans(repo: Path) -> list[tuple[Path, str]]:
         if path is None:
             return
         namespaced = ref is not None and ref.startswith(ALLOWED_REF_PREFIX)
+        resolved = path.resolve()
         try:
-            path.resolve().relative_to(root)
+            resolved.relative_to(root)
             under_root = True
         except ValueError:
             under_root = False
-        if (namespaced or under_root) and path not in seen:
-            seen.add(path)
+        # `seen` keys on the RESOLVED path, not the one git printed, so the
+        # filesystem pass below (which only ever sees resolved paths, coming
+        # off an already-resolved `root`) can tell "already reported" from
+        # "reached neither signal" instead of silently double-reporting the
+        # same directory under two spellings.
+        if (namespaced or under_root) and resolved not in seen:
+            seen.add(resolved)
             out.append((path, ref if ref is not None else "detached"))
 
     current: Path | None = None
@@ -302,4 +321,15 @@ def orphans(repo: Path) -> list[tuple[Path, str]]:
             flush(current, current_ref)
             current, current_ref = None, None
     flush(current, current_ref)
+
+    # The filesystem pass: anything `worktrees_root` actually holds that the
+    # porcelain listing above never mentioned at all. `root.iterdir()` needs
+    # no cooperation from git's own bookkeeping, which is the point -- it is
+    # what a directory `create` left behind reaches even when git has
+    # stopped tracking it as a worktree by any means.
+    if root.is_dir():
+        for child in sorted(root.iterdir()):
+            if child.is_dir() and child.resolve() not in seen:
+                seen.add(child.resolve())
+                out.append((child, "untracked"))
     return out

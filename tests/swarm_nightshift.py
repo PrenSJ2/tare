@@ -1580,6 +1580,54 @@ def test_a_parked_story_is_excluded_from_the_next_pick_this_shift(swarm_home, tm
     assert shift.steps[1].story_key == "spec-alpha/2"
 
 
+# --- I2(a): a leftover worktree directory must cost one story, not the queue
+
+def test_a_leftover_worktree_directory_parks_one_story_not_the_whole_shift(
+        swarm_home, tmp_path, monkeypatch):
+    """Before this fix, `wt_module.create`'s `FileExistsError` was inside the
+    loop's `try` with no per-story `except`, so it propagated through
+    `except BaseException: raise` and ended the shift -- story 2, perfectly
+    runnable, was never attempted that night. A leftover directory is
+    ordinary (a dispatch timeout, or any untracked file `dispose` correctly
+    refused to force-remove), so this must cost one night for story 1, not
+    the queue.
+    """
+    from swarm import queue
+    from swarm import worktree as wt_mod
+
+    repo = _bmad_repo(
+        tmp_path,
+        '- id: "1"\n  title: Add a limiter\n  description: Return 429 on breach.\n'
+        '- id: "2"\n  title: Add a cache\n  description: Cache the response.\n')
+    _with_origin(repo)
+    bin_dir = _fake_claude(tmp_path)
+    _fake_gh(tmp_path, ok=True)
+    _on_path(monkeypatch, bin_dir)
+    monkeypatch.setenv("TARE_TEST_OUTCOME", "complete")
+    monkeypatch.setenv("TARE_TEST_VERIFIED", "true")
+
+    # Simulate exactly the producer named in the review: a leftover directory
+    # from an earlier, incomplete shift, at the exact path `create` would use
+    # for story 1.
+    leftover = wt_mod.branch_for("spec-alpha", "1").replace("/", "__")
+    stale = wt_mod.worktrees_root(repo) / leftover
+    stale.mkdir(parents=True)
+    (stale / "stray.txt").write_text("an earlier shift did not clean up\n")
+
+    shift = ns.run_story_shift(repo, apply=True)
+
+    parked = [e for e in ns.read_ledger() if e.get("event") == queue.PARKED_EVENT]
+    verified = [e for e in ns.read_ledger() if e.get("event") == queue.VERIFIED_EVENT]
+    assert len(parked) == 1
+    assert parked[0]["story_key"] == "spec-alpha/1"
+    assert "could not create a worktree" in parked[0]["reason"]
+    # The whole point: story 2 was still attempted and verified THIS shift,
+    # not lost along with story 1.
+    assert len(verified) == 1
+    assert verified[0]["story_key"] == "spec-alpha/2"
+    assert "story shift crashed" not in shift.ended
+
+
 # --- story mode: apply=True, against stub `claude` and `gh` -----------------
 
 def _fake_claude(tmp_path):

@@ -1787,7 +1787,28 @@ def run_story_shift(
                 break
 
             on_event(f"taking {story.key}: {story.title}")
-            tree = wt_module.create(repo, slug=story.slug, story_id=story.id)
+            # Per-story, unlike the `except BaseException` around the whole
+            # loop below: `create` raises `FileExistsError` for an ordinary,
+            # recoverable cause -- a leftover directory from a dispatch
+            # timeout, or any untracked file `dispose` correctly refused to
+            # force-remove -- and `RuntimeError` when `git worktree add`
+            # itself fails. Neither is this story's fault alone, but letting
+            # either escape used to end the WHOLE shift: story 2, perfectly
+            # runnable, was never attempted that night or any night after,
+            # because one leftover directory for story 1 crashed past the
+            # `record(..., "end")` call. A story that cannot start tonight
+            # must cost one night, not the queue -- the loop's stated premise
+            # for every other refusal already applies here too.
+            try:
+                tree = wt_module.create(repo, slug=story.slug, story_id=story.id)
+            except (FileExistsError, RuntimeError) as exc:
+                consecutive_failures += 1
+                parked_this_shift.add(story.key)
+                record({"event": queue.PARKED_EVENT, "story_key": story.key,
+                        "reason": f"could not create a worktree: {exc}",
+                        "detail": "run `swarm doctor` to see what is on disk"})
+                on_event(f"parked {story.key}: could not create a worktree ({exc})")
+                continue
             step.branch = tree.branch
             try:
                 # The base of this story's diff, captured BEFORE anything

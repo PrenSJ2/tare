@@ -257,3 +257,40 @@ def test_creating_over_an_existing_tree_refuses_rather_than_reusing(repo_with_re
     wt.create(repo_with_remote, slug="spec-alpha", story_id="1")
     with pytest.raises(FileExistsError):
         wt.create(repo_with_remote, slug="spec-alpha", story_id="1")
+
+
+# --- I2(b): orphans must see what git's own bookkeeping no longer does ------
+
+def test_orphans_finds_a_directory_git_no_longer_tracks_as_a_worktree(repo_with_remote):
+    """The gap this fixes: `git worktree remove` (or anything else that
+    drops the directory from git's own porcelain listing while leaving it on
+    disk) used to make `orphans() == []` -- neither the branch signal nor the
+    "under root" signal ever fired, because both were only ever applied to
+    paths `git worktree list --porcelain` yielded in the first place. `create`
+    still refuses the same path with `FileExistsError` forever; before this
+    fix, `doctor` had nothing to say about why.
+    """
+    tree = wt.create(repo_with_remote, slug="spec-alpha", story_id="1")
+    # Simulate git's bookkeeping losing track of it while the directory
+    # itself survives -- not achievable by deleting `.git/worktrees/<id>`
+    # portably, so this drops the whole `.git` metadata's reference instead,
+    # which is the same end state porcelain listing would see: nothing.
+    subprocess.run(["git", "worktree", "remove", "--force", str(tree.path)],
+                   cwd=repo_with_remote, capture_output=True)
+    tree.path.mkdir(parents=True)
+    (tree.path / "leftover.txt").write_text("still here\n")
+
+    found = wt.orphans(repo_with_remote)
+
+    assert [p.resolve() for p, _ in found] == [tree.path.resolve()]
+    assert found[0][1] == "untracked"
+    with pytest.raises(FileExistsError):
+        wt.create(repo_with_remote, slug="spec-alpha", story_id="1")
+
+
+def test_orphans_does_not_double_report_a_worktree_git_still_tracks(repo_with_remote):
+    """The filesystem pass must add to what the porcelain pass already found,
+    not duplicate it."""
+    wt.create(repo_with_remote, slug="spec-alpha", story_id="1")
+    found = wt.orphans(repo_with_remote)
+    assert len(found) == 1

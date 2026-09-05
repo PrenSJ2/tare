@@ -334,9 +334,12 @@ def check_bmad(repo: Path) -> list[tuple[str, str]]:
             findings.append(("fail", f"could not check for orphaned worktrees: {exc}"))
     else:
         for path, ref in orphaned:
-            # `ref` is a branch name under `worktree.ALLOWED_REF_PREFIX`, or
-            # the literal string "detached" for a detached-HEAD worktree --
-            # this phrasing reads sensibly either way.
+            # `ref` is a branch name under `worktree.ALLOWED_REF_PREFIX`, the
+            # literal string "detached" for a detached-HEAD worktree, or
+            # "untracked" for a directory `worktree.orphans` found only by
+            # scanning the filesystem -- git's own bookkeeping had already
+            # stopped listing it as a worktree at all. This phrasing reads
+            # sensibly either way.
             findings.append(("warn", f"orphaned worktree {path} (ref: {ref}) -- a shift did "
                                      "not dispose of it; remove it by hand once you have "
                                      "read it"))
