@@ -98,6 +98,71 @@ def test_a_story_parked_twice_is_still_offered(swarm_home, tmp_path):
     assert queue.next_story(tmp_path).story.id == "1"
 
 
+# --- infrastructure vs judgement parks (finding 1) --------------------------
+#
+# A story that cannot even START -- a leftover worktree, a push that failed,
+# an unreadable base sha -- says nothing about whether the story itself is
+# runnable. Only a JUDGEMENT park (the gate refused it, the dev agent
+# reported it blocked, the verifier withheld sign-off) should spend down
+# DEFAULT_MAX_PARKS; see queue.py's "What the counter counts" section.
+
+def test_three_infrastructure_parks_do_not_retire_the_story(swarm_home, tmp_path):
+    _install(tmp_path, THREE)
+    for _ in range(3):
+        ns.record({"event": queue.PARKED_EVENT, "story_key": "spec-alpha/1",
+                    "reason": "could not create a worktree: leftover directory",
+                    "kind": queue.PARK_KIND_INFRASTRUCTURE})
+    # Still offered: none of these three parks counted toward the limit.
+    assert queue.next_story(tmp_path).story.id == "1"
+    assert queue.park_counts().get("spec-alpha/1", 0) == 0
+
+
+def test_three_judgement_parks_still_retire_the_story(swarm_home, tmp_path):
+    _install(tmp_path, THREE)
+    for _ in range(3):
+        ns.record({"event": queue.PARKED_EVENT, "story_key": "spec-alpha/1",
+                    "reason": "the recommendation deploys",
+                    "kind": queue.PARK_KIND_JUDGEMENT})
+    pick = queue.next_story(tmp_path)
+    assert pick.story.id == "2"
+    assert any("parked 3 times" in why for _, why in pick.skipped)
+
+
+def test_a_mix_counts_only_the_judgement_parks(swarm_home, tmp_path):
+    _install(tmp_path, THREE)
+    # Five infrastructure parks -- a leftover directory nobody cleaned up for
+    # five nights running -- plus two judgement parks. Only the two judgement
+    # parks count, so the story is still offered (2 < DEFAULT_MAX_PARKS).
+    for _ in range(5):
+        ns.record({"event": queue.PARKED_EVENT, "story_key": "spec-alpha/1",
+                    "reason": "could not create a worktree: leftover directory",
+                    "kind": queue.PARK_KIND_INFRASTRUCTURE})
+    for _ in range(2):
+        ns.record({"event": queue.PARKED_EVENT, "story_key": "spec-alpha/1",
+                    "reason": "blocked: some_error",
+                    "kind": queue.PARK_KIND_JUDGEMENT})
+    assert queue.park_counts()["spec-alpha/1"] == 2
+    assert queue.next_story(tmp_path).story.id == "1"
+    # A third judgement park tips it over the limit.
+    ns.record({"event": queue.PARKED_EVENT, "story_key": "spec-alpha/1",
+                "reason": "blocked: some_error", "kind": queue.PARK_KIND_JUDGEMENT})
+    pick = queue.next_story(tmp_path)
+    assert pick.story.id == "2"
+    assert any("parked 3 times" in why for _, why in pick.skipped)
+
+
+def test_a_park_with_no_kind_field_counts_as_judgement(swarm_home, tmp_path):
+    """Old ledger entries predate the `kind` field. Absent must read as
+    judgement -- the conservative choice that preserves pre-existing
+    behaviour rather than silently un-retiring an already-retired story."""
+    _install(tmp_path, THREE)
+    for _ in range(3):
+        ns.record({"event": queue.PARKED_EVENT, "story_key": "spec-alpha/1"})
+    pick = queue.next_story(tmp_path)
+    assert pick.story.id == "2"
+    assert any("parked 3 times" in why for _, why in pick.skipped)
+
+
 def test_exclude_keeps_this_shift_from_re_offering_what_it_just_parked(swarm_home, tmp_path):
     _install(tmp_path, THREE)
     assert queue.next_story(tmp_path, exclude=frozenset({"spec-alpha/1"})).story.id == "2"

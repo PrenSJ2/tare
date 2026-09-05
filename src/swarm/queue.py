@@ -30,6 +30,36 @@ being able to CLEAR it by reading: the ledger is append-only, so resetting a
 story's count means hand-editing (or truncating) that file, not flipping a
 flag. What this design buys is a single visible source of truth for the
 count, not a convenient way to reset it.
+
+## What the counter counts, and what it deliberately does not
+
+The paragraph above describes a judgement about the STORY: the gate refused
+it, the dev agent reported it blocked, the verifier would not sign off. Those
+are reasons a further night is not going to help, because nothing about the
+story changed since it was last tried.
+
+A `story-parked` entry can also record something that is not a judgement at
+all: a leftover worktree directory from a prior crash, a hook that failed to
+scope, a base sha or diff `git` could not read, a push that timed out. None
+of those say anything about the story -- they say the machine could not get
+far enough to try it. Counting them toward the same limit means a `story` a
+gate would happily run is retired forever by a directory nobody deleted, and
+deleting the directory does not un-retire it -- the append-only ledger still
+has three parks on it. That is the failure this module now refuses to
+reproduce: `park_counts` counts only the judgement kind. Infrastructure parks
+still go to the ledger (so `recap` renders them and an operator can find and
+fix the underlying cause) and still count toward `consecutive_failures` (so
+three in a row still end the shift the same night) -- they simply do not
+spend down the story's three tries at being judged.
+
+An entry with no `kind` at all -- every entry written before this change --
+is counted as a judgement. That is the conservative reading: those entries
+already contributed to `park_counts` under the old code, and a story already
+retired by three of them stays retired rather than being silently un-retired
+the moment this module is upgraded. The alternative (treating absent as
+infrastructure) would resurrect stories an operator may have already hand-
+edited the ledger to deal with, on an assumption about history this module
+has no way to check.
 """
 
 from __future__ import annotations
@@ -45,7 +75,16 @@ from .bmad import Story
 VERIFIED_EVENT = "story-verified"
 PARKED_EVENT = "story-parked"
 
-# How many times a story may be parked before the loop stops offering it.
+# The two things a `story-parked` entry's `kind` field can say. See the module
+# docstring's "What the counter counts" section for why the distinction
+# exists and why an absent field reads as JUDGEMENT.
+PARK_KIND_JUDGEMENT = "judgement"
+PARK_KIND_INFRASTRUCTURE = "infrastructure"
+
+# How many times a story may be parked -- for a JUDGEMENT reason -- before the
+# loop stops offering it. Infrastructure parks are visible in the ledger and
+# still count toward a shift's `consecutive_failures` backstop, but they do
+# not spend down this limit.
 DEFAULT_MAX_PARKS = 3
 
 
@@ -72,10 +111,22 @@ def completed_keys() -> set[str]:
 
 
 def park_counts() -> dict[str, int]:
+    """How many times each story has been parked for a JUDGEMENT reason.
+
+    An infrastructure park (`kind == PARK_KIND_INFRASTRUCTURE`) is excluded --
+    it is not evidence about the story, only about the machine that tried to
+    run it, and counting it toward `DEFAULT_MAX_PARKS` is the defect this
+    function exists to not have. An entry with no `kind` field (every entry
+    written before that field existed) is counted as a judgement; see the
+    module docstring for why that is the conservative reading.
+    """
     counts: dict[str, int] = {}
     for entry in _ledger():
-        if entry.get("event") == PARKED_EVENT and entry.get("story_key"):
-            counts[entry["story_key"]] = counts.get(entry["story_key"], 0) + 1
+        if entry.get("event") != PARKED_EVENT or not entry.get("story_key"):
+            continue
+        if entry.get("kind", PARK_KIND_JUDGEMENT) != PARK_KIND_JUDGEMENT:
+            continue
+        counts[entry["story_key"]] = counts.get(entry["story_key"], 0) + 1
     return counts
 
 

@@ -1815,8 +1815,11 @@ def run_story_shift(
 
             if not verdict.ok:
                 parked_this_shift.add(story.key)
+                # Judgement: the gate looked at this story and refused it.
+                # Nothing about the machine failed here.
                 record({"event": queue.PARKED_EVENT, "story_key": story.key,
-                        "reason": verdict.reason, "matched": verdict.matched})
+                        "reason": verdict.reason, "matched": verdict.matched,
+                        "kind": queue.PARK_KIND_JUDGEMENT})
                 on_event(f"parked {story.key}: {verdict.reason}"
                          + (f" ({verdict.matched!r})" if verdict.matched else ""))
                 continue
@@ -1846,9 +1849,14 @@ def run_story_shift(
             except (FileExistsError, RuntimeError) as exc:
                 consecutive_failures += 1
                 parked_this_shift.add(story.key)
+                # Infrastructure: a leftover directory or a hook-scoping
+                # failure says nothing about whether this story is runnable
+                # -- the machine never got far enough to find out. Must not
+                # spend down the story's judgement-park budget (finding 1).
                 record({"event": queue.PARKED_EVENT, "story_key": story.key,
                         "reason": f"could not create a worktree: {exc}",
-                        "detail": "run `swarm doctor` to see what is on disk"})
+                        "detail": "run `swarm doctor` to see what is on disk",
+                        "kind": queue.PARK_KIND_INFRASTRUCTURE})
                 on_event(f"parked {story.key}: could not create a worktree ({exc})")
                 continue
             step.branch = tree.branch
@@ -1866,10 +1874,13 @@ def run_story_shift(
                 if not base_ok or not base_sha:
                     consecutive_failures += 1
                     parked_this_shift.add(story.key)
+                    # Infrastructure: `git rev-parse` failing is a broken or
+                    # unreadable repo, not a verdict on the story.
                     record({"event": queue.PARKED_EVENT, "story_key": story.key,
                             "reason": "could not read the worktree's base commit -- "
                                       "refusing to diff against a guess",
-                            "branch": tree.branch})
+                            "branch": tree.branch,
+                            "kind": queue.PARK_KIND_INFRASTRUCTURE})
                     on_event(f"parked {story.key}: could not read the worktree's base commit")
                     continue
 
@@ -1889,9 +1900,12 @@ def run_story_shift(
                 if outcome.status != "complete":
                     consecutive_failures += 1
                     parked_this_shift.add(story.key)
+                    # Judgement: the dev agent itself reported this story
+                    # blocked. That is a verdict on the story, not the machine.
                     record({"event": queue.PARKED_EVENT, "story_key": story.key,
                             "reason": f"blocked: {outcome.error_code}", "detail": outcome.reason,
-                            "branch": tree.branch, "tail": outcome.raw_tail})
+                            "branch": tree.branch, "tail": outcome.raw_tail,
+                            "kind": queue.PARK_KIND_JUDGEMENT})
                     on_event(f"parked {story.key}: blocked ({outcome.error_code})")
                     continue
 
@@ -1907,10 +1921,13 @@ def run_story_shift(
                 if not diff_ok:
                     consecutive_failures += 1
                     parked_this_shift.add(story.key)
+                    # Infrastructure: `git diff` failing outright, same as the
+                    # base-sha case above.
                     record({"event": queue.PARKED_EVENT, "story_key": story.key,
                             "reason": "could not read the story's diff -- "
                                       "refusing to verify against a guess",
-                            "branch": tree.branch})
+                            "branch": tree.branch,
+                            "kind": queue.PARK_KIND_INFRASTRUCTURE})
                     on_event(f"parked {story.key}: could not read the story's diff")
                     continue
 
@@ -1944,8 +1961,16 @@ def run_story_shift(
                     # rather than discarded.
                     if checked.verified:
                         reason = f"verified but the push failed: {checked.reason}"
+                        # Infrastructure: the verifier signed off. What
+                        # failed here is `git push` -- network or auth, not
+                        # a judgement about the story -- so this must not
+                        # spend down its judgement-park budget.
+                        kind = queue.PARK_KIND_INFRASTRUCTURE
                     else:
                         reason = f"not verified: {checked.reason}"
+                        # Judgement: the verifier looked at the diff and did
+                        # not sign off.
+                        kind = queue.PARK_KIND_JUDGEMENT
                     record({"event": queue.PARKED_EVENT, "story_key": story.key,
                             "reason": reason, "unmet": checked.unmet,
                             "branch": tree.branch, "pushed": pushed,
@@ -1958,7 +1983,7 @@ def run_story_shift(
                             # ambiguously, and that text was previously
                             # discarded on the one path someone reading the
                             # ledger most needs to see it.
-                            "tail": checked.raw})
+                            "tail": checked.raw, "kind": kind})
                     on_event(f"parked {story.key}: {reason}")
             finally:
                 disposal = wt_module.dispose(tree)
