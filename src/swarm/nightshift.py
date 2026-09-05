@@ -30,11 +30,22 @@ test ran `git push`, which is on the DENYLIST, and proved nothing about a
 command absent from both lists. The first real test of that -- `curl` -- went
 straight through.
 
-None of that is a sandbox, and this module does not claim otherwise. A
-continuation could still write a file that a *later* human-run deploy picks
-up. What is guaranteed is narrower and worth stating exactly: nightshift will
-not itself push, deploy, migrate, publish, or run a command it has been told
-to refuse, and it stops the moment a recommendation asks it to.
+None of that is a sandbox, and this module does not claim otherwise. What is
+guaranteed in `session` mode is narrow and worth stating exactly: nightshift
+will not itself push, deploy, migrate, publish, or run a command it has been
+told to refuse, and it stops the moment a recommendation asks it to.
+
+`bmad` mode makes a different trade, deliberately. The tool policy is widened
+-- a story that cannot install a dependency or open a pull request cannot be
+finished unattended -- so layer 3 stops being the control. What replaces it is
+`swarm.worktree`: every story runs in its own worktree on a branch under
+`nightshift/`, and a pre-push hook refuses every ref outside that namespace.
+
+Stated plainly, because the difference matters at 4am: that buys
+REVIEWABILITY, NOT CONFINEMENT. Nothing merges, and every night's work is a
+branch and a diff somebody reads in the morning. Filesystem writes outside the
+repository and network egress are not constrained in this mode, and a refusal
+no longer ends the shift -- it parks the story and the loop moves on.
 
 ## Why it stops rather than asking
 

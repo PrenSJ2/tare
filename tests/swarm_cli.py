@@ -115,3 +115,32 @@ def test_uninstall_on_malformed_settings_exits_1(swarm_home, capsys):
     assert cli.main(["uninstall"]) == 1
     err = capsys.readouterr().err
     assert "error:" in err
+
+
+def test_queue_defaults_to_session_mode(capsys):
+    """The existing behaviour is the default. Story mode is opted into."""
+    from swarm import cli
+    parser = cli.build_parser()
+    args = parser.parse_args(["nightshift", "start", "--session", "abc"])
+    assert args.queue == "session"
+
+
+def test_queue_bmad_selects_story_mode():
+    from swarm import cli
+    parser = cli.build_parser()
+    args = parser.parse_args(["nightshift", "start", "--queue", "bmad"])
+    assert args.queue == "bmad"
+
+
+def test_the_night_window_is_off_by_default_in_story_mode():
+    from swarm import cli
+    parser = cli.build_parser()
+    args = parser.parse_args(["nightshift", "start", "--queue", "bmad"])
+    assert args.window is False
+
+
+def test_the_window_can_be_restored():
+    from swarm import cli
+    parser = cli.build_parser()
+    args = parser.parse_args(["nightshift", "start", "--queue", "bmad", "--window"])
+    assert args.window is True

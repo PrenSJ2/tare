@@ -146,22 +146,35 @@ def _cmd_nightshift(args) -> int:
         print("`claude` is not on PATH -- nothing to dispatch to")
         return 1
 
-    session = args.session or reader.current_session()
-    if session is None:
-        print("no session transcript found")
-        return 1
     repo = paths.working_tree(args.repo)
 
-    shift = ns.run_shift(
-        session, repo,
-        apply=args.apply,
-        max_steps=args.max_steps,
-        max_minutes=args.max_minutes,
-        step_timeout_minutes=args.step_timeout,
-        ignore_window=args.anytime,
-        wait_for_window=args.wait,
-        on_event=print,
-    )
+    if args.queue == "bmad":
+        # No session to watch -- the plan is the source of the next step, and
+        # `run_story_shift` does not take one.
+        shift = ns.run_story_shift(
+            repo,
+            apply=args.apply,
+            max_steps=args.max_steps,
+            max_minutes=args.max_minutes,
+            step_timeout_minutes=args.step_timeout,
+            ignore_window=not args.window,
+            on_event=print,
+        )
+    else:
+        session = args.session or reader.current_session()
+        if session is None:
+            print("no session transcript found")
+            return 1
+        shift = ns.run_shift(
+            session, repo,
+            apply=args.apply,
+            max_steps=args.max_steps,
+            max_minutes=args.max_minutes,
+            step_timeout_minutes=args.step_timeout,
+            ignore_window=args.anytime,
+            wait_for_window=args.wait,
+            on_event=print,
+        )
     print(f"\nended: {shift.ended}")
     print(f"{len(shift.steps)} step(s). Read them back with: swarm nightshift recap")
     # Non-zero when nothing was carried forward, so a wrapper script can tell.
@@ -263,7 +276,7 @@ def _cmd_show(args) -> int:
     return 0
 
 
-def main(argv=None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="swarm", description="Agent event stream.")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -311,6 +324,12 @@ def main(argv=None) -> int:
                          help="run outside the night window")
     p_night.add_argument("--wait", action="store_true",
                          help="arm now and sleep until the window opens")
+    p_night.add_argument("--queue", choices=("session", "bmad"), default="session",
+                         help="where the next step comes from: the watched session's last "
+                              "message (default), or a BMAD stories.yaml plan")
+    p_night.add_argument("--window", action="store_true",
+                         help="restrict story mode to the 21:00-07:00 night window "
+                              "(session mode always uses it)")
     p_night.add_argument("--max-steps", type=int, default=6, dest="max_steps")
     p_night.add_argument("--max-minutes", type=int, default=240, dest="max_minutes")
     p_night.add_argument("--step-timeout", type=int, default=45, dest="step_timeout",
@@ -336,6 +355,11 @@ def main(argv=None) -> int:
     p_show.add_argument("--redact", action="store_true")
     p_show.set_defaults(fn=_cmd_show)
 
+    return parser
+
+
+def main(argv=None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
     try:
         return args.fn(args)

@@ -90,6 +90,43 @@ swarm watch                # live view of this session's agents
 swarm nightshift recap     # what ran overnight
 ```
 
+### Working a plan instead of a chat message
+
+`nightshift` normally takes its next step from the last message of the session
+it is watching. That makes the work queue whatever was said last, and nothing
+accumulates across nights.
+
+`--queue bmad` reads a plan instead:
+
+```bash
+swarm nightshift start --queue bmad --apply
+swarm doctor                       # is the plan still one we can read?
+```
+
+It reads [BMAD-METHOD](https://github.com/bmad-code-org/BMAD-METHOD)'s
+`stories.yaml`, dispatches one story per iteration via `bmad-build-auto`, and
+subtracts a story from the queue only when a **separate read-only pass**
+confirms its acceptance criteria hold against the diff. A story that merely
+ran comes back tomorrow.
+
+BMAD documents `spec_checkpoint`, `done_checkpoint` and `invoke_dev_with` as
+read by "the dispatching caller", and `stories.yaml` carries no status field
+by rule. So the seam is clean: **BMAD owns the plan, tare owns the loop, the
+boundary and the record.** Nothing is written back into BMAD's tree.
+
+**This mode runs a wider tool policy than the default**, because a story that
+cannot install a dependency or open a pull request cannot be finished
+unattended. What contains it is not the tool list but a git worktree per
+story, on a branch under `nightshift/`, with a `pre-push` hook that refuses
+every ref outside that namespace. That buys reviewability, not confinement:
+nothing merges, and filesystem writes outside the repository are not
+restricted. The hook itself is a guardrail, not containment -- it lives inside
+the tree the agent can write to, so `git push --no-verify`, a
+`GIT_CONFIG_COUNT` override, or just deleting the hook file each defeat it in
+one command; it protects against an agent that pushes somewhere by accident,
+not one that is trying to get around it. Read `swarm nightshift recap` before
+trusting a night's work.
+
 ### The console
 
 The UI is optional and lives in its own repository, because it is a fork:
