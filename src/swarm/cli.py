@@ -25,15 +25,20 @@ def _cmd_doctor(args) -> int:
     extra = doctor.check_hook_command()
     # `doctor`'s positional argument is a stream path, not a repository --
     # there is nowhere else to get one from but the working directory this
-    # command was run in. Gated on `is_installed`: a project that has never
-    # touched BMAD must see exactly today's output, not a new "no BMAD
-    # install" warning on every run. That would turn a diagnostic into
-    # noise, and a noisy diagnostic gets ignored -- which defeats the reason
-    # this check exists.
+    # command was run in (see the `doctor` subparser's help text). Gated on
+    # `is_installed`: a project that has never touched BMAD must see exactly
+    # today's output, not a new "no BMAD install" warning on every run. That
+    # would turn a diagnostic into noise, and a noisy diagnostic gets
+    # ignored -- which defeats the reason this check exists.
     repo = Path.cwd()
     if bmad.is_installed(repo):
-        extra = extra + [f"[{level}] {message}"
-                         for level, message in doctor.check_bmad(repo) if level != "ok"]
+        # No `[level]` tag: every other entry in this list (from
+        # `check_hook_command` and from `render`'s own problems) is a plain
+        # sentence with no severity marker, and a report that tags only
+        # some of its lines reads as two different tools glued together.
+        # "ok" findings are dropped -- `render`'s "Problems:" section is
+        # for what needs attention, not a health statement.
+        extra = extra + [message for level, message in doctor.check_bmad(repo) if level != "ok"]
     print(doctor.render(doctor.inspect(path), extra))
     return 0
 
@@ -262,8 +267,16 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="swarm", description="Agent event stream.")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_doctor = sub.add_parser("doctor", help="validate a stream and report what is missing")
-    p_doctor.add_argument("path", nargs="?")
+    p_doctor = sub.add_parser(
+        "doctor",
+        help="validate a stream and report what is missing",
+        description="Validate a stream and report what is missing. "
+                     "If a BMAD install is found in the current working "
+                     "directory, its health is reported too -- run this "
+                     "from the repository you want inspected, not the one "
+                     "the stream happens to be stored under.")
+    p_doctor.add_argument("path", nargs="?", help="stream file (default: the newest under "
+                                                  "~/.claude/swarm/runs)")
     p_doctor.set_defaults(fn=_cmd_doctor)
 
     sub.add_parser("list", help="list captured streams").set_defaults(fn=_cmd_list)

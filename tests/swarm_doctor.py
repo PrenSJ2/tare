@@ -316,8 +316,11 @@ def test_partial_pairing_states_the_total_is_unknown(swarm_home):
 # that drift is reported AS DRIFT: an empty queue and a queue we can no longer
 # read must never look the same.
 
+import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from swarm import doctor as doc
 
@@ -366,6 +369,51 @@ def test_a_healthy_install_reports_ok(tmp_path):
 def test_a_missing_install_is_reported_not_silently_empty(tmp_path):
     findings = doc.check_bmad(tmp_path)
     assert any(lvl == "warn" and "no BMAD install" in msg for lvl, msg in findings)
+
+
+def test_no_spec_folder_is_reported_not_silently_empty(tmp_path):
+    """Distinct from a missing install: BMAD is here and config.yaml reads
+    fine, there is just nothing under `_bmad-output/specs` yet."""
+    _git_repo(tmp_path)
+    cfg = tmp_path / "_bmad" / "bmm"
+    cfg.mkdir(parents=True)
+    (cfg / "config.yaml").write_text("project_name: demo\n")
+
+    findings = doc.check_bmad(tmp_path)
+    assert any(lvl == "warn" and "no spec folder" in msg for lvl, msg in findings)
+
+
+def test_a_malformed_config_yaml_is_a_finding_not_a_crash(tmp_path):
+    """`spec_folders` reads and parses config.yaml before it can find
+    anything else. A hand-edited file with a YAML syntax error is exactly
+    the kind of drift this function exists to name -- it must come back as
+    a "fail" finding, not an uncaught BmadFormatError that takes the whole
+    `doctor` report down with it."""
+    _git_repo(tmp_path)
+    cfg = tmp_path / "_bmad" / "bmm"
+    cfg.mkdir(parents=True)
+    (cfg / "config.yaml").write_text("project_name: [unterminated\n")
+
+    findings = doc.check_bmad(tmp_path)  # must not raise
+    assert any(lvl == "fail" and "config.yaml" in msg for lvl, msg in findings)
+
+
+def test_an_unreadable_stories_file_is_a_finding_not_a_crash(tmp_path):
+    """A `stories.yaml` that exists (so it passed `spec_folders`'
+    `is_file()` check) but cannot be opened -- a permissions problem, most
+    likely -- must not raise PermissionError out of `check_bmad`."""
+    if os.geteuid() == 0:
+        pytest.skip("running as root can read anything")
+
+    _install(tmp_path, '- id: "1"\n  title: T\n  description: D\n')
+    story_file = tmp_path / "_bmad-output" / "specs" / "spec-alpha" / "stories.yaml"
+    os.chmod(story_file, 0o000)
+    try:
+        findings = doc.check_bmad(tmp_path)  # must not raise
+    finally:
+        os.chmod(story_file, 0o644)
+
+    assert any(lvl == "fail" and "spec-alpha" in msg for lvl, msg in findings)
 
 
 def test_an_unreadable_stories_file_names_the_rule_it_broke(tmp_path):

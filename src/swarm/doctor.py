@@ -235,6 +235,15 @@ def check_bmad(repo: Path) -> list[tuple[str, str]]:
     doctor that goes silent because git broke is exactly the failure this
     function exists to prevent.
 
+    This function must be TOTAL: it returns findings for every input, and
+    never raises. A hand-edited `config.yaml` with a YAML syntax error, or a
+    `stories.yaml` that exists but cannot be opened (permissions, most
+    likely), are exactly the kind of drift this check exists to name -- a
+    crash here is worse than the silent-empty-queue failure the rest of the
+    module guards against, because it takes the whole `doctor` report down
+    with it. Every call below that can raise on a realistic input is
+    guarded and turned into a "fail" finding instead.
+
     Read-only with respect to `_bmad/` and `_bmad-output/`, and creates,
     moves or removes no worktree -- it only reads what `bmad` and `worktree`
     already expose.
@@ -247,8 +256,19 @@ def check_bmad(repo: Path) -> list[tuple[str, str]]:
         return [("warn", f"no BMAD install: {bmad.config_path(repo)} is not there. "
                          "`swarm nightshift --queue bmad` will refuse to start.")]
 
-    folders = bmad.spec_folders(repo)
-    if not folders:
+    # `spec_folders` reads and parses config.yaml (via `output_root`) before
+    # it can find anything; a syntax error there is drift in the one file
+    # everything else in this function depends on, so it is reported and
+    # the folder-dependent checks below are skipped rather than guessed at.
+    config_broken = False
+    try:
+        folders = bmad.spec_folders(repo)
+    except bmad.BmadFormatError as exc:
+        findings.append(("fail", f"{exc.source} cannot be read: {exc}"))
+        folders = []
+        config_broken = True
+
+    if not folders and not config_broken:
         findings.append(("warn", f"no spec folder with a stories.yaml under "
                                  f"{bmad.output_root(repo) / 'specs'}"))
 
@@ -258,7 +278,12 @@ def check_bmad(repo: Path) -> list[tuple[str, str]]:
             stories = bmad.parse_stories(
                 (folder / "stories.yaml").read_text(encoding="utf-8", errors="replace"),
                 spec_dir=folder)
-        except bmad.BmadFormatError as exc:
+        except (bmad.BmadFormatError, OSError) as exc:
+            # BmadFormatError is a content problem (a schema rule broken);
+            # OSError -- PermissionError, most likely -- is a filesystem
+            # problem. Both mean this file cannot be trusted as a plan, and
+            # both are reported the same way rather than one of them
+            # crashing the rest of the report.
             findings.append(("fail", f"{folder.name}/stories.yaml cannot be read: {exc}"))
             continue
         total += len(stories)
@@ -266,13 +291,25 @@ def check_bmad(repo: Path) -> list[tuple[str, str]]:
 
     # Planned but not broken down: real work the loop cannot dispatch. Named
     # rather than skipped, because "no stories" here means "not ready", not
-    # "nothing to do".
-    specs_root = bmad.output_root(repo) / "specs"
-    if specs_root.is_dir():
-        for d in sorted(specs_root.iterdir()):
-            if d.is_dir() and (d / "SPEC.md").is_file() and not (d / "stories.yaml").is_file():
-                findings.append(("warn", f"{d.name}: has SPEC.md but no stories.yaml -- "
-                                         "planned, not broken down, not dispatchable"))
+    # "nothing to do". Skipped entirely if config.yaml was already found
+    # broken above -- `output_root` would only fail the same way again.
+    if not config_broken:
+        try:
+            specs_root = bmad.output_root(repo) / "specs"
+        except bmad.BmadFormatError as exc:
+            findings.append(("fail", f"{exc.source} cannot be read: {exc}"))
+            specs_root = None
+
+        if specs_root is not None and specs_root.is_dir():
+            try:
+                entries = sorted(specs_root.iterdir())
+            except OSError as exc:
+                findings.append(("fail", f"cannot list {specs_root}: {exc}"))
+                entries = []
+            for d in entries:
+                if d.is_dir() and (d / "SPEC.md").is_file() and not (d / "stories.yaml").is_file():
+                    findings.append(("warn", f"{d.name}: has SPEC.md but no stories.yaml -- "
+                                             "planned, not broken down, not dispatchable"))
 
     # `orphans` raises rather than returning [] when `git worktree list`
     # itself fails -- an empty list there would be indistinguishable from "no
