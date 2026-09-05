@@ -149,6 +149,30 @@ def _cmd_nightshift(args) -> int:
     repo = paths.working_tree(args.repo)
 
     if args.queue == "bmad":
+        # `session`, `--wait`, and `--anytime` are all `session`-mode
+        # concepts `run_story_shift` does not take: there is no transcript to
+        # watch (the positional), no window it arms itself to wait for
+        # (`--wait` -- story mode's window is optional per-call via
+        # `--window`, not something to sleep until), and no terminal gate
+        # refusal `--anytime` overrides (a refusal parks the story instead).
+        # Before this, argparse accepted all three under `--queue bmad` and
+        # they were silently ignored -- `swarm nightshift start --wait
+        # --queue bmad` looked like it armed the shift and did nothing of
+        # the sort. Rejected here with a clear message rather than allowed to
+        # look honoured.
+        misused = []
+        if args.session:
+            misused.append(f"the session argument ({args.session!r})")
+        if args.wait:
+            misused.append("--wait")
+        if args.anytime:
+            misused.append("--anytime")
+        if misused:
+            print(f"error: --queue bmad does not use {', '.join(misused)} -- "
+                  "story mode has no session to watch and no window to arm "
+                  "itself for; use --window to restrict it to the night "
+                  "window instead of --anytime, and drop the rest.")
+            return 1
         # No session to watch -- the plan is the source of the next step, and
         # `run_story_shift` does not take one.
         shift = ns.run_story_shift(

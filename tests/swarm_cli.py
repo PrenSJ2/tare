@@ -2,6 +2,8 @@ import json
 import shutil
 import subprocess
 
+import pytest
+
 from swarm import cli, doctor
 
 
@@ -144,6 +146,28 @@ def test_the_window_can_be_restored():
     parser = cli.build_parser()
     args = parser.parse_args(["nightshift", "start", "--queue", "bmad", "--window"])
     assert args.window is True
+
+
+@pytest.mark.parametrize("argv_tail", [
+    ["some-session-id", "--queue", "bmad"],
+    ["--queue", "bmad", "--wait"],
+    ["--queue", "bmad", "--anytime"],
+])
+def test_session_only_flags_are_rejected_not_ignored_under_queue_bmad(
+        swarm_home, tmp_path, capsys, argv_tail):
+    """These three used to be accepted by argparse and then silently
+    dropped on the floor in the `--queue bmad` branch -- `--wait` looked
+    like it armed the shift and did nothing of the sort. Must be a clear
+    refusal, not silence."""
+    repo = tmp_path / "bare"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "feature/x"], check=True)
+
+    code = cli.main(["nightshift", "start", *argv_tail, "--repo", str(repo)])
+
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "does not use" in out
 
 
 # --- I5: deliberate raises must not reach the operator as a traceback ------

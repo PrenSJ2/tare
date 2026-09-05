@@ -2543,7 +2543,7 @@ restricted. Read `swarm nightshift recap` before trusting a night's work.
 
 Run: `python -m pytest tests/test_*.py tests/swarm_*.py -v`
 
-See Task 7 Step 7 on why both globs are needed. Expected: the new tests pass; the 9 pre-existing `swarm_project.py` failures remain and are not yours.
+See Task 7 Step 7 on why both globs are needed. Expected: the new tests pass; the 6 pre-existing `swarm_project.py` failures remain and are not yours (the other 3 pre-existing failures, in `swarm_nightshift.py`, were the gate's own -- Task 11 fixed those).
 
 - [ ] **Step 9: Commit**
 

@@ -1914,6 +1914,30 @@ def test_apply_true_unverified_pushes_but_opens_no_pr_and_stays_queued(
     assert any("Add a limiter" in s.recommendation for s in dry.steps)
 
 
+# --- MINOR: verify.Verdict.raw must reach the ledger for an unverified park
+
+def test_an_unverified_park_carries_the_verifiers_raw_output(swarm_home, tmp_path, monkeypatch):
+    """The one failure mode where the raw text matters most -- the verifier
+    narrated instead of answering, or gave an ambiguous verdict -- used to
+    discard `verify.Verdict.raw` at exactly this record call, while the
+    blocked-outcome path two branches up already kept `outcome.raw_tail`."""
+    from swarm import queue
+    repo = _bmad_repo(tmp_path, ONE_STORY)
+    _with_origin(repo)
+    bin_dir = _fake_claude(tmp_path)
+    _fake_gh(tmp_path, ok=True)
+    _on_path(monkeypatch, bin_dir)
+    monkeypatch.setenv("TARE_TEST_OUTCOME", "complete")
+    monkeypatch.setenv("TARE_TEST_VERIFIED", "false")
+
+    ns.run_story_shift(repo, apply=True)
+
+    parked = [e for e in ns.read_ledger() if e.get("event") == queue.PARKED_EVENT]
+    assert len(parked) == 1
+    assert "stub verify" in parked[0].get("tail", ""), (
+        "the verifier's raw output must reach the ledger, not just its parsed `reason`")
+
+
 def test_done_checkpoint_ends_the_shift_after_disposal(swarm_home, tmp_path, monkeypatch):
     from swarm import queue
     story_yaml = ('- id: "1"\n  title: Add a limiter\n  description: Return 429 on breach.\n'
@@ -1940,6 +1964,42 @@ THREE_STORIES = (
     '- id: "2"\n  title: Add a cache\n  description: Cache the response.\n'
     '- id: "3"\n  title: Add a metric\n  description: Emit a counter.\n'
 )
+
+
+# --- MINOR: story-skipped must not repeat on every pass ---------------------
+
+def test_a_perpetually_skipped_story_is_announced_only_once_per_shift(
+        swarm_home, tmp_path, monkeypatch):
+    """`pick.skipped` is recomputed fresh from `queue.next_story` on every
+    pass, and a skipped story never enters `exclude` -- so a story sitting on
+    `spec_checkpoint` is skipped again on every single pass for the rest of
+    the shift, not just the first. Two OTHER stories dispatched and verified
+    in the same shift are what forces more than one pass; without the fix
+    this produces one `story-skipped` ledger entry per pass instead of one
+    for the whole shift.
+    """
+    from swarm import queue
+    repo = _bmad_repo(
+        tmp_path,
+        '- id: "1"\n  title: Add a limiter\n  description: Return 429 on breach.\n'
+        '  spec_checkpoint: true\n'
+        '- id: "2"\n  title: Add a cache\n  description: Cache the response.\n'
+        '- id: "3"\n  title: Add a metric\n  description: Emit a counter.\n')
+    _with_origin(repo)
+    bin_dir = _fake_claude(tmp_path)
+    _fake_gh(tmp_path, ok=True)
+    _on_path(monkeypatch, bin_dir)
+    monkeypatch.setenv("TARE_TEST_OUTCOME", "complete")
+    monkeypatch.setenv("TARE_TEST_VERIFIED", "true")
+
+    ns.run_story_shift(repo, apply=True)
+
+    entries = ns.read_ledger()
+    skipped = [e for e in entries if e.get("event") == "story-skipped"]
+    verified = [e for e in entries if e.get("event") == queue.VERIFIED_EVENT]
+    assert len(verified) == 2, "both stories 2 and 3 must still have run"
+    assert len(skipped) == 1, f"story 1 must be announced once, not {len(skipped)} times"
+    assert skipped[0]["story_key"] == "spec-alpha/1"
 
 
 def test_the_consecutive_failure_backstop_stops_at_exactly_three(

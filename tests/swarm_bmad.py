@@ -197,3 +197,26 @@ def test_a_numeric_done_checkpoint_is_refused(tmp_path):
     assert exc.value.rule == 1
     assert "done_checkpoint" in exc.value.detail
     assert "int" in exc.value.detail
+
+
+def test_stories_for_names_which_spec_folder_is_malformed(tmp_path):
+    """`parse_stories` has no way to know which folder it was handed --
+    `stories_for` is the 4am path (via `queue.next_story`), and a queue with
+    several spec folders that hits a bad file two folders in must not make an
+    operator guess which one. `doctor.check_bmad` already names the folder
+    when IT catches this; this is the equivalent for the path that actually
+    runs the queue."""
+    cfg = tmp_path / "_bmad" / "bmm"
+    cfg.mkdir(parents=True)
+    (cfg / "config.yaml").write_text("project_name: demo\n")
+    good = tmp_path / "_bmad-output" / "specs" / "spec-alpha"
+    good.mkdir(parents=True)
+    (good / "stories.yaml").write_text('- id: "1"\n  title: T\n  description: D\n')
+    bad = tmp_path / "_bmad-output" / "specs" / "spec-beta"
+    bad.mkdir(parents=True)
+    (bad / "stories.yaml").write_text("not-a-list: true\n")
+
+    with pytest.raises(bmad.BmadFormatError) as exc:
+        bmad.stories_for(tmp_path)
+    assert "spec-beta" in str(exc.value)
+    assert "spec-beta" in exc.value.source

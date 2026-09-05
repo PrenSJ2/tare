@@ -208,9 +208,24 @@ def spec_folders(repo: Path) -> list[Path]:
 
 
 def stories_for(repo: Path) -> list[Story]:
-    """Every story across every spec folder, in folder order then list order."""
+    """Every story across every spec folder, in folder order then list order.
+
+    A malformed `stories.yaml` names its OWN folder here, not just "stories.
+    yaml" -- `parse_stories` has no way to know which folder it was handed
+    (`spec_dir` is `Story` metadata, not the source name), and this is the
+    4am path: a queue with several spec folders that hits one bad file two
+    folders in must not make an operator guess which one. `doctor.check_bmad`
+    already gets this right by naming the folder itself when it catches the
+    same exception; this does the equivalent for the path that actually runs
+    the queue, by carrying the folder name in the exception's own `source`
+    rather than leaving it to whoever happens to catch it.
+    """
     out: list[Story] = []
     for folder in spec_folders(repo):
         text = (folder / "stories.yaml").read_text(encoding="utf-8", errors="replace")
-        out.extend(parse_stories(text, spec_dir=folder))
+        try:
+            out.extend(parse_stories(text, spec_dir=folder))
+        except BmadFormatError as exc:
+            raise BmadFormatError(
+                exc.rule, exc.detail, source=f"{folder.name}/{exc.source}") from exc
     return out

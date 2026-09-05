@@ -23,9 +23,13 @@ other way.
 A story parked for a bad reason -- a gate false positive, a transient blocked
 response -- should be retried on another night. A story parked three times has
 a problem no further night is going to solve, and holding the loop on it costs
-every night after. So parks are counted from the ledger, not stored as a flag,
-which also means clearing the count is something a human can do by reading the
-ledger rather than by finding a hidden state file.
+every night after. So parks are counted from the ledger, not stored as a flag
+-- there is no separate state file that could drift from it, and a human can
+always find the count by reading the ledger. That is not the same claim as
+being able to CLEAR it by reading: the ledger is append-only, so resetting a
+story's count means hand-editing (or truncating) that file, not flipping a
+flag. What this design buys is a single visible source of truth for the
+count, not a convenient way to reset it.
 """
 
 from __future__ import annotations

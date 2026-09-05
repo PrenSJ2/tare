@@ -206,6 +206,15 @@ WIDE_TOOLS = (
     "Read", "Glob", "Grep", "Write", "Edit", "TodoWrite", "Skill",
     "WebFetch", "WebSearch",
     "Bash",
+    # These two are INERT: a bare `Bash` grant above already permits both, so
+    # neither entry changes what is allowed. Kept anyway, not removed --
+    # unlike DENIED_TOOLS's redundancy (defence in depth, a real second
+    # layer), this is pure documentation: it names the two capabilities this
+    # mode was widened FOR (`git push`, `gh pr create`) in the one place
+    # someone reviewing the feature will look, the same way `test_the_wide_
+    # policy_permits_what_it_was_widened_for` asserts their names are present
+    # rather than merely that `Bash` is. Removing them would not change
+    # behaviour and would remove that documentation for no reason.
     "Bash(git push:*)", "Bash(gh pr create:*)",
 )
 
@@ -1741,6 +1750,12 @@ def run_story_shift(
     deadline = time.monotonic() + max_minutes * 60
     stop = stop_file()
     parked_this_shift: set[str] = set()
+    # `pick.skipped` is recomputed on every pass -- a skipped story never
+    # enters `exclude`, so it is skipped again on the NEXT pass too, and
+    # again after that. Without this, one `spec_checkpoint` story (or one
+    # sitting at its park limit) produced up to `max_steps` identical
+    # ledger entries and recap lines in a single night. Announced once.
+    skipped_announced: set[str] = set()
     consecutive_failures = 0
 
     # Everything below is guarded. A shift that raises out of the loop used
@@ -1771,6 +1786,9 @@ def run_story_shift(
 
             pick = queue.next_story(repo, exclude=frozenset(parked_this_shift))
             for skipped, why in pick.skipped:
+                if skipped.key in skipped_announced:
+                    continue
+                skipped_announced.add(skipped.key)
                 # To the ledger as well as `on_event`: a story skipped for
                 # `spec_checkpoint` or a park count is not explainable at 8am
                 # from a recap line alone.
@@ -1930,7 +1948,17 @@ def run_story_shift(
                         reason = f"not verified: {checked.reason}"
                     record({"event": queue.PARKED_EVENT, "story_key": story.key,
                             "reason": reason, "unmet": checked.unmet,
-                            "branch": tree.branch, "pushed": pushed})
+                            "branch": tree.branch, "pushed": pushed,
+                            # `checked.raw` is the verifier's own raw output,
+                            # same field `Outcome.raw_tail` already carries
+                            # for a blocked outcome two branches up. This is
+                            # the one failure mode where it matters most: an
+                            # unverified verdict is exactly a verifier that
+                            # narrated instead of answering, or answered
+                            # ambiguously, and that text was previously
+                            # discarded on the one path someone reading the
+                            # ledger most needs to see it.
+                            "tail": checked.raw})
                     on_event(f"parked {story.key}: {reason}")
             finally:
                 disposal = wt_module.dispose(tree)
