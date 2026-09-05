@@ -350,11 +350,16 @@ _MIGRATION_MODIFIERS = (
 # noun right after the token turns it into a modifier of THAT noun --
 # "the .env PARSER", "dotenv HANDLING", "the .env SECTION" -- rather than the
 # object of the governing verb, the same distinction "the migration GUIDE"
-# needed. Found the same way: `"Dotenv handling is described in config.py."`
-# is already excluded by the newline fix below (a verb in a different line
-# can't reach it), but a short, single-line version of the same shape --
-# "Update the dotenv parser for the new database" -- is not protected by
-# that, and would otherwise match on `update ... database` alone.
+# needed. `"Dotenv handling is described in config.py."` on its own already
+# passes for a different reason -- nothing governs the noun, so no verb+.env
+# pattern fires at all -- but that protection is specific to standing alone.
+# In the blob `run_story_shift` actually screens
+# (`f"{title}\n{description}\n..."`), the newline fix below is what stops a
+# verb in the TITLE line from reaching this sentence when it is the
+# DESCRIPTION line instead. A short, single-line version of the same
+# attributive shape -- "Update the dotenv parser for the new database" --
+# has a governing verb on the SAME line and is protected by neither of
+# those; this lookahead is what catches it.
 _ENV_TOKEN = (
     r"(?:[\w./~-]*\.env(?!\.(?:example|sample|template)\b)(?:\.\w+)?|dotenv)"
     r"(?![ \t]+(?:docs?|section|notes?|parser|stub|loading|handling|example)\b)"
@@ -379,19 +384,26 @@ _ENV_VERBS = r"(?:update|edit|modify|change|write|set|put|add|store|rotate|swap)
 # `.env` reuses the SAME bounded `_FEW_WORDS` budget as migration and
 # credential, not a wider or uncapped one. An uncapped version was tried
 # specifically to reach "live database" 6 words after `.env` in "Update the
-# .env so the app talks to the live database" -- and MEASURED, in isolation,
-# to be the sole cause of a distinct false-pass class: an unrelated value
-# word anywhere later in the same clause was enough to manufacture a match,
-# refusing "Update the changelog and remind people that the .env has a
-# database url" and 7 others like it that a reviewer's targeted corpus
-# showed passing cleanly before the uncap. Widening the vocabulary
-# contributed nothing to that regression by itself; the missing cap did, on
-# its own. So the cap stays, the right-hand guard above absorbs part of what
-# the uncap was reaching for (an attributive `.env` right next to a distant
-# value word), and the rest is an accepted gap: bounded to the SAME width as
-# migration/credential, "Update the .env so the app talks to the live
-# database" now passes, undetected, because "so the app talks to the" is 6
-# words and the budget is 4. That is a real false pass, left in place on
+# .env so the app talks to the live database" -- and caused a false-refusal
+# regression, wrongly refusing ordinary work like "Update the changelog and
+# remind people that the .env has a database url" (three such sentences were
+# tested; all three regressed; all three are in the corpus below).
+#
+# What actually caused it took two comparisons, not one, and both are worth
+# recording so the next person doesn't have to re-derive them: uncapped reach
+# WITH the widened vocabulary (`live`/`prod`/`database`/`cluster`/`url`/
+# `endpoint` above) reproduces all three false refusals; uncapped reach with
+# only the narrow `_CREDENTIAL_VALUE` five words reproduces none of them.
+# Neither change is the cause on its own -- the widened vocabulary needs the
+# uncapped reach to have room to find a distant, unrelated match, and the
+# uncapped reach needs the widened vocabulary to have something to find that
+# far away. Capped-and-widened, which is what ships below, reproduces none
+# of the three either. So the cap stays, the right-hand guard above absorbs
+# part of what the uncap was reaching for (an attributive `.env` right next
+# to a distant value word), and the rest is an accepted gap: bounded to the
+# SAME width as migration/credential, "Update the .env so the app talks to
+# the live database" now passes, undetected, because "so the app talks to
+# the" is 6 words and the budget is 4. That is a real false pass, left in place on
 # purpose rather than reopening the uncapped version that traded it for a
 # worse one -- see the honesty comment below `_PRODUCTION_VERBS` for the
 # measured count this leaves.
@@ -423,37 +435,69 @@ _ENV_VERBS = r"(?:update|edit|modify|change|write|set|put|add|store|rotate|swap)
 #
 # What this is NOT: a claim that the false-refusal rate is low, or falling
 # with each round of fixes. It is measured, and the measurement is not
-# flattering. A round of fixes here cleared 19 false refusals from a
-# 36-sentence corpus a reviewer built to find gaps -- and then, on an
-# INDEPENDENT 50-sentence corpus the patterns were never shown, scored the
-# same 9 wrongly refused out of the 25-sentence must-pass half as the
-# version before those fixes. Two cleared, two introduced, net zero, on
-# sentences these patterns hadn't been fitted to. A THIRD round fixed those
-# two regressions and, in the process, MEASURED that one of its own two
-# changes was net-negative the same way: excluding "and"/"then"/"so" from the
-# migration/credential word budget closed two real false refusals and opened
-# two real false passes on bare-imperative, coordinated-object instructions
-# ("Run the dump and the migrations tonight") -- worse under this file's own
-# asymmetry, since a false refusal costs one night and a false pass costs a
-# database -- so it was reverted, and the false refusals it would have
+# flattering. Round one's fixes cleared 19 false refusals from a 36-sentence
+# corpus a reviewer built to find gaps -- and then, on an INDEPENDENT
+# 50-sentence corpus the patterns were never shown, scored the same 9
+# wrongly refused out of the 25-sentence must-pass half as the version
+# before those fixes. Two cleared, two introduced, net zero, on sentences
+# these patterns hadn't been fitted to.
+#
+# Round three fixed those two regressions -- and, alongside that fix, made
+# two further changes of its own: excluding "and"/"then"/"so" from the
+# migration/credential word budget, and uncapping the `.env` reach entirely.
+# Round four measured BOTH of those changes against fresh prose and found
+# each one net-negative in the same way. The conjunction exclusion closed
+# three real false refusals (two screenable, plus the matcher-only "Perform
+# the audit and confirm migrations are current") and opened two real false
+# passes on bare-imperative, coordinated-object instructions ("Run the dump
+# and the migrations tonight") -- worse under this file's own asymmetry,
+# since a false refusal costs one night and a false pass costs a database --
+# so it was reverted in round four, and the three false refusals it had
 # closed are accepted and documented instead (see the `_FEW_WORDS` comment
-# and `tests/swarm_nightshift.py`'s `_ACCEPTED_FALSE_REFUSALS`). The other
-# change (an uncapped `.env` reach) was similarly found to be the sole cause
-# of a cross-clause false-refusal class once capped and uncapped were
-# compared directly, and was replaced with a bounded reach plus a right-hand
-# guard, leaving one further false pass accepted on purpose rather than
-# reopening the uncapped version (`_ACCEPTED_FALSE_PASSES`).
+# and `tests/swarm_nightshift.py`'s `_ACCEPTED_FALSE_REFUSALS`/
+# `_ACCEPTED_FALSE_REFUSALS_MATCHER_ONLY`). The uncapped `.env` reach was
+# similarly found, once capped and uncapped were compared directly (and
+# compared again against a narrower vocabulary -- see the `_ENV_VERBS`
+# comment above for both comparisons), to require BOTH the uncap and the
+# widened vocabulary together, neither alone; it was replaced with a bounded
+# reach plus a right-hand guard, also in round four, leaving one further
+# false pass accepted on purpose rather than reopening the uncapped version
+# (`test_a_documented_accepted_false_pass`).
+#
+# A fifth review, of round four's result, found it net better on 81 fresh
+# sentences neither commit had been fitted to: false passes fell from 12/30
+# to 1/30, false refusals rose from 4/51 to 6/51 -- eleven real hazards
+# closed for two ordinary-work refusals, the right side of this file's own
+# asymmetry. It also measured a residual false-pass rate on that same
+# corpus, restricted to the production matcher alone (not the actionability
+# check, which catches some misses for unrelated reasons): roughly 1 in 7.
+# Four named classes accounted for it, none of them fixed here, on
+# instruction, because naming them is the deliverable and chasing named
+# examples is exactly how this file got a comment that overclaimed safety in
+# the first place:
+#   - budget overflow past four modifiers ("Revoke the leaked GitHub
+#     personal access token" misses; "Revoke the leaked GitHub token" --
+#     three modifiers, not four -- still blocks)
+#   - credential vocabulary gaps ("Rotate the production signing
+#     certificate" -- "certificate" is not in `_CREDENTIAL_VALUE`)
+#   - `_ENV_VERBS` gaps ("Point the .env at the production database" --
+#     "point" is not a listed `.env` verb)
+#   - bare `drop ... table` outside tier 1's adjacency requirement ("Drop
+#     the old sessions table once the migration lands" -- tier 1's
+#     `drop\s+(table|database)` needs "table" immediately after "drop")
 #
 # That is the honest ceiling of a keyword-and-shape gate over free-text
 # prose: it can be made to pass any corpus it is shown, that is not the same
 # thing as getting better at the job, and sometimes the fix for one false
 # refusal IS a false pass rather than a free improvement -- the two are not
-# always separable, and this file now documents two places where they
-# weren't. Treat every corpus in `tests/swarm_nightshift.py` as a set of
-# regression guards against the EXACT sentences that were wrong before, not
-# as evidence the gate now generalises. It doesn't, provably, and claiming
-# otherwise here would be the same kind of error `worktree.py` was corrected
-# for making about "fails closed".
+# always separable, and this file has twice now shipped a fix for one that
+# measurement later showed was really the other. Treat every corpus in
+# `tests/swarm_nightshift.py` as a set of regression guards against the
+# EXACT sentences that were wrong before, not as evidence the gate now
+# generalises against everything else. On unseen prose it currently misses
+# roughly 1 in 7 on the matcher alone, in the four named ways above, and
+# claiming otherwise here would be the same kind of error `worktree.py` was
+# corrected for making about "fails closed".
 _PRODUCTION_VERBS = (
     (r"deploy", "deploys"), (r"release", "releases"), (r"publish", "publishes"),
     (r"migrate", "runs a migration"), (r"ship\s+(it|this|to)", "ships"),

@@ -298,7 +298,8 @@ def test_the_false_refusal_corpus_refusal_rate():
     -- and so CI prints the rate even if every individual case also has its
     own assertion elsewhere. Covers both halves of the corpus, checked the
     way each half is meant to be checked. Deliberately does NOT include
-    `_ACCEPTED_FALSE_REFUSALS` or `_ACCEPTED_FALSE_PASSES` below -- those are
+    `_ACCEPTED_FALSE_REFUSALS`/`_ACCEPTED_FALSE_REFUSALS_MATCHER_ONLY` or the
+    sentence in `test_a_documented_accepted_false_pass` below -- those are
     documented costs, not bugs, and folding them in here would make this
     assertion fail by design.
     """
@@ -349,12 +350,15 @@ def test_documented_accepted_false_refusals_matcher_only(text):
 def test_a_documented_accepted_false_pass():
     """`.env`'s reach is capped at the same width as migration/credential, and
     "so the app talks to the" is 6 words -- past the cap. An uncapped version
-    caught this one and, measured in isolation, was the sole cause of the
-    `_ENV_CROSS_CLAUSE_FALSE_REFUSALS` regression above; the right-hand guard
-    added alongside the revert (`_ENV_TOKEN`) closes the adjacent "the .env
-    PARSER/HANDLING/..." shape but does not reach this far. Left passing on
-    purpose: a bounded pattern with one named gap is a better trade than an
-    unbounded one that refuses ordinary documentation and changelog work.
+    caught this one, but caused the `_ENV_CROSS_CLAUSE_FALSE_REFUSALS`
+    regression above -- and that regression needed BOTH the uncap and the
+    widened `_ENV_VALUE` vocabulary together, not either alone (see the
+    `_ENV_VERBS` comment in the source for the comparisons that showed this).
+    The right-hand guard added alongside the revert (`_ENV_TOKEN`) closes the
+    adjacent "the .env PARSER/HANDLING/..." shape but does not reach this far.
+    Left passing on purpose: a bounded pattern with one named gap is a better
+    trade than an unbounded one that refuses ordinary documentation and
+    changelog work.
     """
     verdict = ns.screen("Update the .env so the app talks to the live database")
     assert verdict.ok, (
