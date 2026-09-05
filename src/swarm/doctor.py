@@ -282,7 +282,19 @@ def check_bmad(repo: Path) -> list[tuple[str, str]]:
     try:
         orphaned = worktree.orphans(repo)
     except RuntimeError as exc:
-        findings.append(("fail", f"could not check for orphaned worktrees: {exc}"))
+        # The single most common cause -- `swarm doctor` invoked from
+        # somewhere that is not a git repository at all -- gets a plain
+        # sentence rather than git's own "fatal: not a git repository (or
+        # any of the parent directories): .git", which names a file most
+        # operators have never had to think about. Anything else keeps
+        # git's detail; a doctor that hides an unrecognised failure behind a
+        # generic message is exactly the silence this task exists to avoid.
+        if "not a git repository" in str(exc):
+            findings.append(("fail", f"{repo} is not a git repository -- `swarm doctor` and "
+                                     "the nightshift queue can only run inside the repository "
+                                     "BMAD is installed in; cannot check for orphaned worktrees"))
+        else:
+            findings.append(("fail", f"could not check for orphaned worktrees: {exc}"))
     else:
         for path, ref in orphaned:
             # `ref` is a branch name under `worktree.ALLOWED_REF_PREFIX`, or

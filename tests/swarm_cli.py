@@ -1,7 +1,8 @@
 import json
 import shutil
+import subprocess
 
-from swarm import cli
+from swarm import cli, doctor
 
 
 def test_doctor_reports_a_stream(swarm_home, capsys):
@@ -24,6 +25,52 @@ def test_doctor_with_no_argument_uses_the_newest_stream(swarm_home, capsys):
 def test_doctor_with_no_streams_is_not_an_error(swarm_home, capsys):
     assert cli.main(["doctor"]) == 0
     assert "no streams" in capsys.readouterr().out.lower()
+
+
+def test_doctor_stays_silent_about_bmad_when_not_installed(swarm_home, tmp_path, monkeypatch, capsys):
+    """A project that has never touched BMAD must see exactly today's
+    output -- no new "no BMAD install" warning on every run. That would
+    turn a diagnostic into noise, and a noisy diagnostic gets ignored,
+    which defeats the point of the check."""
+    path = swarm_home / "runs" / "2026-08-19-s1.jsonl"
+    path.write_text(json.dumps(
+        {"ts": "t", "session": "s1", "event": "subagent_start", "agent_id": "a1"}) + "\n")
+    monkeypatch.chdir(tmp_path)  # no _bmad/bmm/config.yaml anywhere here
+
+    assert cli.main(["doctor", str(path)]) == 0
+    out = capsys.readouterr().out
+
+    expected = doctor.render(doctor.inspect(path), doctor.check_hook_command())
+    assert out.rstrip("\n") == expected
+
+
+def test_doctor_surfaces_bmad_findings_when_installed(swarm_home, tmp_path, monkeypatch, capsys):
+    path = swarm_home / "runs" / "2026-08-19-s1.jsonl"
+    path.write_text(json.dumps(
+        {"ts": "t", "session": "s1", "event": "subagent_start", "agent_id": "a1"}) + "\n")
+
+    repo = tmp_path / "work"
+    repo.mkdir()
+    for args in (["init", "-q", "-b", "feature/x"],
+                 ["config", "user.email", "t@example.com"],
+                 ["config", "user.name", "T"]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True)
+    (repo / "f.txt").write_text("x\n")
+    subprocess.run(["git", "-C", str(repo), "add", "f.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "i"], check=True)
+
+    cfg = repo / "_bmad" / "bmm"
+    cfg.mkdir(parents=True)
+    (cfg / "config.yaml").write_text("project_name: demo\n")
+    lonely = repo / "_bmad-output" / "specs" / "spec-planned"
+    lonely.mkdir(parents=True)
+    (lonely / "SPEC.md").write_text("# planned only\n")
+
+    monkeypatch.chdir(repo)
+    assert cli.main(["doctor", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "spec-planned" in out
+    assert "planned, not broken down" in out
 
 
 def test_list_shows_streams(swarm_home, capsys):

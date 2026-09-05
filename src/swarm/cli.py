@@ -5,7 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from swarm import doctor, install, paths
+from swarm import bmad, doctor, install, paths
 
 
 def _newest_stream():
@@ -21,7 +21,20 @@ def _cmd_doctor(args) -> int:
     if path is None:
         print("no streams found in", paths.runs_dir())
         return 0
-    print(doctor.render(doctor.inspect(path), doctor.check_hook_command()))
+
+    extra = doctor.check_hook_command()
+    # `doctor`'s positional argument is a stream path, not a repository --
+    # there is nowhere else to get one from but the working directory this
+    # command was run in. Gated on `is_installed`: a project that has never
+    # touched BMAD must see exactly today's output, not a new "no BMAD
+    # install" warning on every run. That would turn a diagnostic into
+    # noise, and a noisy diagnostic gets ignored -- which defeats the reason
+    # this check exists.
+    repo = Path.cwd()
+    if bmad.is_installed(repo):
+        extra = extra + [f"[{level}] {message}"
+                         for level, message in doctor.check_bmad(repo) if level != "ok"]
+    print(doctor.render(doctor.inspect(path), extra))
     return 0
 
 
