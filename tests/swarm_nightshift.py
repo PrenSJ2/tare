@@ -1923,6 +1923,79 @@ def test_story_skipped_is_rendered(swarm_home):
     assert "parked 3 times already" in out
 
 
+def test_a_skip_only_night_is_not_labelled_nothing_was_dispatched(swarm_home):
+    """The bug in miniature: a night that skipped every remaining story (one
+    stuck at its park limit, one waiting on a human checkpoint) used to fall
+    through to "Nothing was dispatched. A refusal is the gate working" --
+    false twice over. Nothing was refused (`screen()` never ran on either
+    story; `queue.next_story` declined them before the gate saw them), and
+    both skips are exactly the kind of thing somebody must act on."""
+    entries = [
+        {"at": "2026-09-04T22:00:00", "event": "story-skipped", "story_key": "a/1",
+         "reason": "spec_checkpoint is set and nobody is here to review it"},
+        {"at": "2026-09-04T22:00:00", "event": "story-skipped", "story_key": "a/2",
+         "reason": "parked 3 times already"},
+        {"at": "2026-09-04T23:00:00", "event": "end", "mode": "bmad",
+         "reason": "no story left to run"},
+    ]
+    out = ns.recap(entries)
+    assert "Nothing was dispatched" not in out
+    assert "A refusal is the gate working" not in out
+    assert "skipped a/1" in out
+    assert "skipped a/2" in out
+
+
+def test_an_empty_queue_is_worded_differently_from_a_gate_refusal(swarm_home):
+    """A BMAD plan with no story left to run never reached `screen()` at
+    all -- crediting "a refusal" would name a check that never fired. A real
+    gate refusal (session mode's terminal one, or a repo/config `refused`)
+    keeps the original wording, which is accurate there."""
+    empty_queue = ns.recap([
+        {"at": "2026-09-04T22:00:00", "event": "start", "mode": "bmad",
+         "repo": "/x/proj", "branch": "feature/x", "apply": True},
+        {"at": "2026-09-04T22:00:01", "event": "end", "mode": "bmad",
+         "reason": "no story left to run"},
+    ])
+    assert "Nothing was dispatched. The queue had no story left to run." in empty_queue
+    assert "A refusal is the gate working" not in empty_queue
+
+    gate_refusal = ns.recap([
+        {"at": "2026-08-21T23:00:00", "event": "start", "repo": "/x/proj",
+         "branch": "feat/x", "apply": True},
+        {"at": "2026-08-21T23:40:00", "event": "refused",
+         "reason": "the recommendation deploys", "matched": "deploy",
+         "recommendation": "Deploy the fix"},
+        {"at": "2026-08-21T23:40:01", "event": "end", "reason": "gate refused"},
+    ])
+    assert "A refusal is the gate working, not a failure." in gate_refusal
+
+
+def test_multi_line_stderr_is_indented_line_by_line(swarm_home):
+    """Real git/gh stderr is routinely multi-line. A raw f-string used to put
+    the second physical line out unindented and unmarked -- visually
+    indistinguishable from a fresh top-level ledger entry -- on exactly the
+    two events (`push-failed`, `pr-failed`) this task requires be impossible
+    to miss."""
+    stderr = ("remote: Permission denied\n"
+             "fatal: unable to access 'https://example/repo.git/': "
+             "The requested URL returned error: 403")
+    push = ns.recap([{"at": "2026-09-05T02:00:00", "event": "push-failed",
+                      "story_key": "a/1", "branch": "nightshift/a-1",
+                      "stderr": stderr}])
+    push_lines = push.splitlines()
+    assert "                       ! remote: Permission denied" in push_lines
+    assert any(l.startswith("                       ! fatal: unable to access")
+               for l in push_lines)
+
+    pr = ns.recap([{"at": "2026-09-05T02:00:00", "event": "pr-failed",
+                    "story_key": "a/1", "branch": "nightshift/a-1",
+                    "stderr": stderr}])
+    pr_lines = pr.splitlines()
+    assert "                       ! remote: Permission denied" in pr_lines
+    assert any(l.startswith("                       ! fatal: unable to access")
+               for l in pr_lines)
+
+
 def test_a_realistic_story_night_summarises_truthfully(swarm_home):
     """One verified, one parked (blocked), one skipped, a worktree left
     behind -- the shape the task describes as a realistic night. Nothing in

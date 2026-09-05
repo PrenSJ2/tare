@@ -1550,13 +1550,20 @@ def recap(entries: list[dict]) -> str:
         elif event == "push-failed":
             lines.append(f"{stamp}  !! push failed for {entry.get('story_key')} "
                          f"({entry.get('branch')})")
-            if entry.get("stderr"):
-                lines.append(f"                       {entry['stderr'][:300]}")
+            # Real git/gh stderr is routinely multi-line ("remote: Permission
+            # denied\nfatal: unable to access ..."). Split and indent every
+            # line, the way the `continued`/`story-parked` tails above already
+            # do -- a raw multi-line f-string here would leave the second
+            # physical line unindented and unmarked, indistinguishable from a
+            # fresh top-level entry, on exactly the two events this task
+            # requires be impossible to miss.
+            for stderr_line in entry.get("stderr", "")[:300].splitlines():
+                lines.append(f"                       ! {stderr_line}")
         elif event == "pr-failed":
             lines.append(f"{stamp}  !! PR failed for {entry.get('story_key')} "
                          f"({entry.get('branch')})")
-            if entry.get("stderr"):
-                lines.append(f"                       {entry['stderr'][:300]}")
+            for stderr_line in entry.get("stderr", "")[:300].splitlines():
+                lines.append(f"                       ! {stderr_line}")
         elif event == "worktree-left":
             # Not a status line: this means a tree is still on disk holding
             # uncommitted work, and tomorrow's `wt_module.create` for the same
@@ -1571,17 +1578,39 @@ def recap(entries: list[dict]) -> str:
             lines.append(f"{stamp}  ── ended: {entry.get('reason')}")
 
     # Fires only when NOTHING acted on anything -- no continuation, no
-    # dry-run preview, and no story ever reached the queue's verified/parked/
-    # push/PR/worktree stages. A story-mode night that parked or verified at
-    # least one story is not "nothing was dispatched": something ran, the
-    # record above says what and why, and this line would be false if it
-    # printed alongside that record. Session-mode ledgers leave all six story
-    # lists empty, so this condition reduces to exactly what it was before.
+    # dry-run preview, and no story ever reached the queue's skipped/verified/
+    # parked/push/PR/worktree stages. `story_skipped` belongs in this guard
+    # for the same reason the other five do: a night that skipped a story
+    # stuck at its park limit, or one waiting on a human checkpoint, is not
+    # "nothing was dispatched" either -- both are things somebody must act on,
+    # and the line above already prints them. (It was missing here in an
+    # earlier version of this fix, which is how a skip-only night still ended
+    # up under this banner even after the other five were handled.)
+    #
+    # A story-mode night that parked or verified at least one story is not
+    # "nothing was dispatched": something ran, the record above says what and
+    # why, and this line would be false if it printed alongside that record.
+    # Session-mode ledgers leave all six story lists empty, so this condition
+    # reduces to exactly what it was before.
     if (ends and not continued and not would and not story_verified
-            and not story_parked and not push_failed and not pr_failed
-            and not worktree_left):
+            and not story_parked and not story_skipped and not push_failed
+            and not pr_failed and not worktree_left):
         lines.append("")
-        lines.append("Nothing was dispatched. A refusal is the gate working, not a failure.")
+        # Two different reasons can still land here after the guard above,
+        # and they are not the same claim. "A refusal is the gate working" is
+        # true when `screen()` actually ran and declined something (session
+        # mode's terminal gate refusal, or a `refused` repo/config check in
+        # either mode). It is not true when a BMAD plan simply had no story
+        # left to hand the gate in the first place -- `queue.next_story`
+        # returning `reason="no story left to run"` is a literal string this
+        # module never produces for any other case, so it is checked for by
+        # name rather than inferred from mode, and it does not occur in
+        # session mode at all.
+        last_reason = ends[-1].get("reason", "") if ends else ""
+        if "no story left to run" in last_reason:
+            lines.append("Nothing was dispatched. The queue had no story left to run.")
+        else:
+            lines.append("Nothing was dispatched. A refusal is the gate working, not a failure.")
     return "\n".join(lines)
 
 
