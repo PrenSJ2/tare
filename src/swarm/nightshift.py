@@ -47,12 +47,19 @@ branch and a diff somebody reads in the morning. Filesystem writes outside the
 repository and network egress are not constrained in this mode, and a refusal
 no longer ends the shift -- it parks the story and the loop moves on.
 
-## Why it stops rather than asking
+## Why `session` mode stops rather than asking
 
 There is nobody there. An autonomous loop that pauses for confirmation at 3am
 is a loop that has silently stopped anyway, except it also holds a lock and
 looks alive. So every gate failure is terminal for the shift, recorded with
 its reason, and reported at recap. A refusal is the feature working.
+
+`bmad` mode reaches the opposite conclusion from that same premise, because it
+starts from a different fact: it has a durable queue, and `session` mode does
+not. A story the gate declines is not lost -- it is parked, recorded, and
+offered again tomorrow, so parking it costs one night rather than the story.
+A refusal in `session` mode has no queue to land in, which is precisely why
+there it has nowhere to go but the exit.
 
 ## The ledger is the product
 
