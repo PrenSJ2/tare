@@ -116,15 +116,22 @@ boundary and the record.** Nothing is written back into BMAD's tree.
 
 **This mode runs a wider tool policy than the default**, because a story that
 cannot install a dependency or open a pull request cannot be finished
-unattended. What contains it is not the tool list but a git worktree per
+unattended. What replaces the tool list as the boundary is a git worktree per
 story, on a branch under `nightshift/`, with a `pre-push` hook that refuses
 every ref outside that namespace. That buys reviewability, not confinement:
-nothing merges, and filesystem writes outside the repository are not
+filesystem writes outside the repository and network egress are not
 restricted. The hook itself is a guardrail, not containment -- it lives inside
 the tree the agent can write to, so `git push --no-verify`, a
 `GIT_CONFIG_COUNT` override, or just deleting the hook file each defeat it in
 one command; it protects against an agent that pushes somewhere by accident,
-not one that is trying to get around it. Read `swarm nightshift recap` before
+not one that is trying to get around it.
+
+**"Nothing merges" is not something the tool policy or the hook enforces.**
+The deny list is prefix-based under a bare `Bash` grant, so `gh api
+repos/O/R/pulls/N/merge -X PUT` reaches the merge endpoint the same way the
+hook-bypass commands above reach a ref outside the namespace. It holds
+because a human is supposed to read the PR before merging it, not because
+anything here prevents merging it. Read `swarm nightshift recap` before
 trusting a night's work.
 
 ### The console

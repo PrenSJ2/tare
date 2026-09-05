@@ -40,12 +40,23 @@ told to refuse, and it stops the moment a recommendation asks it to.
 finished unattended -- so layer 3 stops being the control. What replaces it is
 `swarm.worktree`: every story runs in its own worktree on a branch under
 `nightshift/`, and a pre-push hook refuses every ref outside that namespace.
+That hook is a guardrail against an accidental push, not containment against
+one that is trying to get past it -- `swarm.worktree`'s own docstring names
+four one-command ways through it (`--no-verify`, `-c core.hooksPath=`, the
+`GIT_CONFIG_COUNT` equivalent, deleting the hook file), each verified against
+this repository's own hook.
 
 Stated plainly, because the difference matters at 4am: that buys
-REVIEWABILITY, NOT CONFINEMENT. Nothing merges, and every night's work is a
-branch and a diff somebody reads in the morning. Filesystem writes outside the
-repository and network egress are not constrained in this mode, and a refusal
-no longer ends the shift -- it parks the story and the loop moves on.
+REVIEWABILITY, NOT CONFINEMENT. Filesystem writes outside the repository and
+network egress are not constrained in this mode, and a refusal no longer ends
+the shift -- it parks the story and the loop moves on.
+
+"Nothing merges" is NOT a property this module or `swarm.worktree` enforces --
+see the `WIDE_DENIED_TOOLS` comment below for why the tool policy doesn't
+either. It holds, when it holds, because a human is supposed to read the PR
+before merging it. What this module can actually guarantee is narrower and
+still worth having: every night's work that reaches a remote at all lands on
+a namespaced branch, as a PR, for that human to read.
 
 ## Why `session` mode stops rather than asking
 
@@ -162,16 +173,22 @@ DENIED_TOOLS = (
 # secret, or trigger a workflow" -- it cannot do those things BY THE NAMED
 # COMMAND, which is a narrower and weaker property.
 #
-# What IS actually enforced, and enforced by something other than this list:
-# WHERE a push can land. `swarm.worktree`'s pre-push hook rejects every ref
-# outside refs/heads/nightshift/*, at the git layer, regardless of which Bash
-# invocation tried to push it. That containment holds even though the deny
-# list above it does not.
+# What IS enforced, by something other than this list, for an agent that is
+# NOT trying to get around it: WHERE a push can land. `swarm.worktree`'s
+# pre-push hook rejects every ref outside refs/heads/nightshift/*, at the git
+# layer, regardless of which Bash invocation tried to push it. That is a
+# guardrail, not containment, and the qualifier is load-bearing -- the hook is
+# a file inside the tree the agent can write to, and `swarm.worktree`'s own
+# docstring names four one-command ways past it (`--no-verify`,
+# `-c core.hooksPath=`, the `GIT_CONFIG_COUNT` equivalent, deleting the hook
+# file), each verified against this repository's own hook. It stops an
+# accidental push, not a deliberate one.
 #
-# So "nothing merges" is not a property of this tool policy. It is a property
-# of the human who is supposed to read the PR before merging it. This module
-# cannot make that true; it can only make sure there is a PR, on a namespaced
-# branch, for a human to read.
+# So "nothing merges" is not a property of this tool policy, or of the hook
+# either. It is a property of the human who is supposed to read the PR before
+# merging it. This module cannot make that true; it can only make it likely
+# that a night's work lands as a PR, on a namespaced branch, for a human to
+# read.
 #
 # Unverified: whether a subagent spawned via the `Task` tool (granted below)
 # inherits this process's --allowedTools/--disallowedTools, or runs under

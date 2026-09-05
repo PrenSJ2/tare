@@ -7,10 +7,14 @@ module is that replacement.
 
 ## What it buys, and what it does not
 
-A worktree buys **reviewability, not confinement**. Nothing merges; every
-night's work is a branch and a diff read in the morning. Under the widened
-policy, filesystem writes outside the repository and network egress are
-unconstrained, and this module does not pretend otherwise.
+A worktree buys **reviewability, not confinement**: every night's work is a
+branch and a diff read in the morning, IF it reaches a remote at all. Under
+the widened policy, filesystem writes outside the repository and network
+egress are unconstrained, and this module does not pretend otherwise.
+"Nothing merges" is not a property this module enforces -- see below for what
+the hook does and does not stop, and `nightshift.py`'s `WIDE_DENIED_TOOLS`
+comment for why the tool policy underneath it doesn't either. It holds
+because a human is supposed to read the PR before merging it.
 
 The pre-push hook is a guardrail, not containment, and the distinction
 matters: it stops an agent that pushes somewhere it did not mean to, not one
