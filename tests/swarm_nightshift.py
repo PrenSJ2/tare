@@ -1449,6 +1449,87 @@ def test_invoke_dev_with_goes_through_the_gate_not_around_it(swarm_home, tmp_pat
     assert any("parked" in e and "terraform" in e for e in events)
 
 
+# --- C1: a story is work to do by construction, not a status line ----------
+#
+# `names_an_action` reads `words[0]` of the screened blob -- for a story that
+# is the first word of the TITLE, and BMAD calls `title` a "Display name",
+# not an instruction. Copied verbatim from BMAD's own `stories-schema.md`
+# example (same text as `tests/swarm_bmad.py`'s `SCHEMA_EXAMPLE`).
+BMAD_SCHEMA_EXAMPLE = """\
+- id: "1"
+  title: Add rate limiting to the public API
+  description: >-
+    Introduce a token-bucket limiter in front of the public endpoints;
+    return 429 with a Retry-After header on limit breach.
+  spec_checkpoint: true
+  invoke_dev_with: >-
+    Rate limit state must be shared across instances; use the existing
+    Redis client, not in-process memory.
+- id: "2"
+  title: Expose limiter metrics to the ops dashboard
+  description: >-
+    Emit per-route accept/reject counters the existing dashboard can
+    scrape; no new dashboard panels in this story.
+"""
+
+
+def test_screen_in_story_mode_does_not_require_an_action_verb():
+    """Story 2's title alone -- "Expose limiter metrics to the ops
+    dashboard" -- opens with a verb `_ACTION_STEMS` does not recognise.
+    `require_action=True` (session mode's default) still refuses it; story
+    mode's `require_action=False` must not."""
+    text = ("Expose limiter metrics to the ops dashboard\n"
+            "Emit per-route accept/reject counters the existing dashboard can scrape.\n")
+    assert ns.screen(text).ok is False
+    assert "names no action" in ns.screen(text).reason
+    relaxed = ns.screen(text, require_action=False)
+    assert relaxed.ok is True, relaxed.reason
+
+
+def test_screen_in_story_mode_still_refuses_a_production_action():
+    """The production matcher is not relaxed alongside the actionability
+    check -- it is what screens `invoke_dev_with`, the injection surface
+    `run_story_shift`'s own comment names."""
+    text = ("Expose limiter metrics to the ops dashboard\n"
+            "Emit per-route counters.\n"
+            "Then run terraform apply to provision the new dashboard bucket.\n")
+    verdict = ns.screen(text, require_action=False)
+    assert verdict.ok is False
+    assert "terraform" in verdict.matched
+
+
+def test_bmad_canonical_example_is_not_parked_across_four_nights(swarm_home, tmp_path):
+    """Before this fix: story 1 is skipped every night (`spec_checkpoint`),
+    story 2's title alone fails `names_an_action`, so every dry run parks it
+    -- and the fourth retires it from the queue forever via
+    `queue.DEFAULT_MAX_PARKS`. Reproduced end to end against BMAD's own
+    schema example, verbatim, run for four simulated nights."""
+    repo = _bmad_repo(tmp_path, BMAD_SCHEMA_EXAMPLE)
+    for night in range(4):
+        shift = ns.run_story_shift(repo, apply=False)
+        assert "dry run" in shift.ended, f"night {night}: {shift.ended}"
+        assert shift.steps and shift.steps[0].story_key == "spec-alpha/2"
+        assert shift.steps[0].verdict.ok, f"night {night}: {shift.steps[0].verdict.reason}"
+    parked = [e for e in ns.read_ledger() if e.get("event") == "story-parked"]
+    assert parked == [], f"story 2 must never be parked for naming no action: {parked}"
+
+
+def test_a_harmless_titled_story_with_a_dangerous_invoke_dev_with_still_parks(
+        swarm_home, tmp_path):
+    """A title shaped like a real BMAD display name -- not an instruction --
+    paired with an `invoke_dev_with` that names a production action. Must
+    still park: relaxing the actionability check must not relax the
+    production check riding along with it."""
+    repo = _bmad_repo(
+        tmp_path,
+        '- id: "1"\n  title: Ops dashboard limiter metrics\n'
+        '  description: Emit per-route counters.\n'
+        '  invoke_dev_with: "Then run terraform apply to provision the bucket."\n')
+    events = []
+    ns.run_story_shift(repo, apply=False, on_event=events.append)
+    assert any("parked" in e and "terraform" in e for e in events)
+
+
 def test_no_bmad_install_refuses_rather_than_falling_back(swarm_home, tmp_path):
     """Believing you are running a plan while running a chat message is the
     worst outcome available, so there is no fallback."""

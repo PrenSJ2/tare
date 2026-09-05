@@ -727,7 +727,7 @@ def parse_outcome(text: str) -> Outcome:
 # The gate
 # ---------------------------------------------------------------------------
 
-def screen(recommendation: str) -> Verdict:
+def screen(recommendation: str, *, require_action: bool = True) -> Verdict:
     """Does this proposed next step reach production?
 
     Pure, so it can be argued with in a test rather than at 3am. Fails closed:
@@ -740,6 +740,39 @@ def screen(recommendation: str) -> Verdict:
     good step -- while accepting "The DM fix is on main but not in the Chrome
     Web Store build", a status statement that is 58 characters of nothing an
     agent can carry out. Length was never the property being tested for.
+
+    `require_action=False` is `run_story_shift`'s (see there): a BMAD story's
+    title is a "Display name" per BMAD's own schema, not an instruction, and
+    `names_an_action` reads `words[0]` of the blob -- for a story that is the
+    first word of the TITLE. Measured against BMAD's own two-story schema
+    example, `names_an_action` refuses 10 of 13 realistic titles, including
+    BMAD's OWN "Expose limiter metrics to the ops dashboard" (opens with
+    "Expose", not a recognised stem); run end to end, four consecutive nights
+    of that exact example dispatch nothing and the fourth retires a story
+    from the queue FOREVER via `queue.DEFAULT_MAX_PARKS` -- not a safety
+    failure, the feature simply not working.
+
+    Why this check has a job in `session` mode and none in story mode: it
+    exists to tell an instruction apart from a status line -- a chat
+    transcript's last message might describe what already happened rather
+    than propose what to do next, and there is no other way to tell those
+    apart than checking that it opens like an instruction. A BMAD story
+    carries no such ambiguity -- `stories-schema.md` rule 3 forbids a
+    `status` field, so every entry in the plan IS a step, never a report of
+    one, and the question `names_an_action` asks is already answered by the
+    file the text came from.
+
+    The production matcher is NOT relaxed alongside it, and must not be: it
+    is what screens `invoke_dev_with`, free text from a file concatenated
+    into a prompt that runs under the widest tool policy in this system (see
+    `build_story_command`). Nothing about a story being "work by
+    construction" makes ITS free-text fields safe -- the two checks answer
+    unrelated questions, one about the SOURCE of the text (irrelevant once
+    the file already guarantees it), one about where the text POINTS
+    (unaffected by where it came from). Do not fold this back together: the
+    next reader who is tempted to drop `screen()` for stories entirely, or to
+    re-enable `names_an_action` for them "for consistency", would be undoing
+    the fix this parameter exists to be.
     """
     text = (recommendation or "").strip()
     if not text:
@@ -757,7 +790,7 @@ def screen(recommendation: str) -> Verdict:
         matched = re.sub(r"\s+", " ", hit[0]).strip()
         return Verdict(False, f"the recommendation {hit[1]}", matched=matched)
 
-    if not names_an_action(text):
+    if require_action and not names_an_action(text):
         return Verdict(False, "the recommendation names no action to carry out")
     return Verdict(True, "no production signal in the recommendation")
 
@@ -1726,9 +1759,13 @@ def run_story_shift(
             story = pick.story
             # The gate, over everything that reaches the prompt -- including
             # `invoke_dev_with`, which is free text from a file about to run under
-            # the widest tool policy in this system.
+            # the widest tool policy in this system. `require_action=False`:
+            # see `screen`'s docstring for why a story's title is not held to
+            # the "opens like an instruction" test a chat message is -- a
+            # plan entry is work to do by construction, and the production
+            # matcher below still runs over every word of it regardless.
             screened = f"{story.title}\n{story.description}\n{story.invoke_dev_with}"
-            verdict = screen(screened)
+            verdict = screen(screened, require_action=False)
             step = Step(at=now.isoformat(timespec="seconds"),
                         recommendation=f"{story.key}: {story.title}",
                         verdict=verdict, story_key=story.key)
