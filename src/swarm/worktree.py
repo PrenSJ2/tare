@@ -72,6 +72,29 @@ from pathlib import Path
 BRANCH_NAMESPACE = "nightshift"
 ALLOWED_REF_PREFIX = f"refs/heads/{BRANCH_NAMESPACE}/"
 
+# Default timeout for the cheap, metadata-only calls: `rev-parse`, `status`,
+# `config`, `worktree list`. These read an index or a ref, not a tree, and
+# 15s is already generous for that.
+_SHORT_GIT_TIMEOUT = 15
+
+# `git worktree add` writes out a full checkout, and `git worktree remove
+# --force` walks and deletes one, including files git does not track (a
+# widened story's freshly-installed `node_modules`). Neither is a metadata
+# read. Measured on this repo: `worktree add` on ~20k tracked files, 2.46s;
+# `worktree remove --force` on ~30k ignored files / 117MB, 1.72s -- both
+# comfortably under the old flat 15s. The reason for a SEPARATE, longer
+# timeout is what those numbers do not cover: a monorepo with more like 10x
+# the tracked-file count, or a Git-LFS repo where checkout does not just walk
+# the tree but SMUDGES it -- downloading every LFS-tracked blob's content
+# over the network. That can exceed 15s on an ordinary connection well before
+# anything is actually wrong. 90s is chosen as a middle point in the brief's
+# 60-120s range: long enough to absorb an LFS smudge or a large checkout
+# without being mistaken for a hang, short enough that a shift genuinely
+# stuck here does not hold the lock for the rest of the night. It is not
+# claimed to be enough for every repo -- only more realistic than 15s for
+# the two operations measured above to be the actual outliers.
+_LONG_GIT_TIMEOUT = 90
+
 # Where the per-worktree hooks live, relative to the worktree root.
 HOOKS_DIRNAME = ".nightshift-hooks"
 
@@ -114,9 +137,20 @@ class Worktree:
     repo: Path
 
 
-def _git(repo: Path, *args: str, timeout: int = 15) -> subprocess.CompletedProcess:
-    """Local git only -- nothing in this module pushes or fetches, so 15s is
-    generous rather than tight.
+def _git(repo: Path, *args: str, timeout: int = _SHORT_GIT_TIMEOUT) -> subprocess.CompletedProcess:
+    """Nothing in this module pushes or fetches over a remote it chose -- but
+    that is not the same claim as "no network traffic ever", and it is
+    narrower than the claim this docstring used to make. `git worktree add`
+    on a Git-LFS repo runs the smudge filter during checkout, which DOES fetch
+    LFS-tracked blob content over the network; this module does not disable
+    that, and a stalled LFS fetch is exactly what the longer timeout below
+    exists to eventually cut off rather than hang on forever.
+
+    One flat timeout used to cover every call here, including two that are
+    not cheap: `worktree add` (a full checkout) and `worktree remove --force`
+    (a full delete, including untracked files). See `_LONG_GIT_TIMEOUT` for
+    why those two get a longer budget than `rev-parse`/`status`/`config`/
+    `worktree list`, which stay on the short default.
 
     Translates a hang into a failed `CompletedProcess` rather than letting
     `TimeoutExpired` propagate: every caller here (`create`, `dispose`,
@@ -202,7 +236,10 @@ def create(repo: Path, *, slug: str, story_id: str, base: str = "HEAD") -> Workt
     args = ["worktree", "add", str(path)]
     args += [branch] if existing.returncode == 0 else ["-b", branch, base]
 
-    result = _git(repo, *args)
+    # `worktree add` is a full checkout, not a metadata read -- see
+    # `_LONG_GIT_TIMEOUT` for the measurements and the LFS case that motivate
+    # a longer budget here than the module default.
+    result = _git(repo, *args, timeout=_LONG_GIT_TIMEOUT)
     if result.returncode != 0:
         raise RuntimeError(f"git worktree add failed: {result.stderr.strip()}")
 
@@ -213,7 +250,7 @@ def create(repo: Path, *, slug: str, story_id: str, base: str = "HEAD") -> Workt
         # module's own directory looking like a safe tree, but nothing
         # stops a push from it. Remove it rather than leave it behind for a
         # retry to trip over as a stale FileExistsError with no self-heal.
-        _git(repo, "worktree", "remove", "--force", str(path))
+        _git(repo, "worktree", "remove", "--force", str(path), timeout=_LONG_GIT_TIMEOUT)
         raise
     return Worktree(path=path, branch=branch, repo=repo)
 
@@ -249,7 +286,11 @@ def dispose(tree: Worktree, *, force: bool = False) -> str:
     # module has already judged clean above. The real decision was made by
     # the check above; this only bypasses git re-litigating it against our
     # own bookkeeping directory.
-    result = _git(tree.repo, "worktree", "remove", "--force", str(tree.path))
+    # `remove --force` deletes the tree including ignored files (a widened
+    # story's freshly-installed `node_modules`), not a metadata read -- same
+    # reasoning as `create`'s `worktree add` above.
+    result = _git(tree.repo, "worktree", "remove", "--force", str(tree.path),
+                  timeout=_LONG_GIT_TIMEOUT)
     if result.returncode != 0:
         return f"could not remove {tree.path}: {result.stderr.strip()}"
     return f"removed {tree.path}"

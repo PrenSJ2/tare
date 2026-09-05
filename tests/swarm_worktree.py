@@ -294,3 +294,57 @@ def test_orphans_does_not_double_report_a_worktree_git_still_tracks(repo_with_re
     wt.create(repo_with_remote, slug="spec-alpha", story_id="1")
     found = wt.orphans(repo_with_remote)
     assert len(found) == 1
+
+
+# --- per-call timeout: cheap queries stay short, checkouts get longer ------
+#
+# `worktree add` is a full checkout and `worktree remove --force` deletes one
+# including ignored files -- neither is a metadata read like `rev-parse` or
+# `status`, and a Git-LFS smudge filter can turn `add` into a network fetch.
+# One flat 15s timeout for every call risked SIGKILLing a slow-but-legitimate
+# checkout mid-write, leaving exactly the leftover directory finding 1 is
+# about. These tests assert the SPLIT exists, not that any particular number
+# is "enough" -- see worktree.py's `_LONG_GIT_TIMEOUT` comment for that.
+
+def _recording_run(monkeypatch):
+    """Wrap `subprocess.run` inside `swarm.worktree` to capture the `timeout`
+    kwarg of every call, while still actually running the command -- these
+    tests must exercise the real `create`/`dispose` control flow, not a
+    stub that never touches git."""
+    calls: list[tuple[tuple, int | None]] = []
+    real_run = subprocess.run
+
+    def _wrapped(args, *a, **kw):
+        calls.append((tuple(args), kw.get("timeout")))
+        return real_run(args, *a, **kw)
+
+    monkeypatch.setattr(wt.subprocess, "run", _wrapped)
+    return calls
+
+
+def test_create_uses_the_long_timeout_for_worktree_add_only(repo_with_remote, monkeypatch):
+    calls = _recording_run(monkeypatch)
+
+    wt.create(repo_with_remote, slug="spec-alpha", story_id="1")
+
+    by_args = {args: timeout for args, timeout in calls}
+    add_call = next(args for args in by_args if "add" in args and "worktree" in args)
+    rev_parse_call = next(args for args in by_args if "rev-parse" in args)
+
+    assert by_args[add_call] == wt._LONG_GIT_TIMEOUT
+    assert by_args[rev_parse_call] == wt._SHORT_GIT_TIMEOUT
+    assert wt._LONG_GIT_TIMEOUT > wt._SHORT_GIT_TIMEOUT
+
+
+def test_dispose_uses_the_long_timeout_for_worktree_remove_only(repo_with_remote, monkeypatch):
+    tree = wt.create(repo_with_remote, slug="spec-alpha", story_id="1")
+    calls = _recording_run(monkeypatch)
+
+    wt.dispose(tree)
+
+    by_args = {args: timeout for args, timeout in calls}
+    remove_call = next(args for args in by_args if "remove" in args and "worktree" in args)
+    status_call = next(args for args in by_args if "status" in args)
+
+    assert by_args[remove_call] == wt._LONG_GIT_TIMEOUT
+    assert by_args[status_call] == wt._SHORT_GIT_TIMEOUT
