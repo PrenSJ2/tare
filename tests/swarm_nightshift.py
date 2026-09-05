@@ -1710,6 +1710,97 @@ def _on_path(monkeypatch, bin_dir):
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
 
 
+# --- I1: the only unbounded subprocess calls in the system ------------------
+#
+# `push_branch`, `open_pr`, `_git_out`, and `worktree._git` used to carry no
+# `timeout=` at all -- every other subprocess call in this module has since
+# it was written. `git push`/`gh pr create` are the two network calls, and a
+# stalled one used to hang the shift silently: `max_minutes` is only checked
+# at the top of the loop, so nothing bounded a wedged push. These tests
+# simulate the hang directly (a real one would just make the suite slow) and
+# assert it is handled the way the surrounding code already handles OSError:
+# a ledger event and a `False`/`""` return, not a crash.
+
+def test_a_hanging_push_times_out_rather_than_hanging_the_shift(swarm_home, tmp_path, monkeypatch):
+    import subprocess as sp
+
+    from swarm import worktree as wt_mod
+
+    def _hangs(*args, **kwargs):
+        raise sp.TimeoutExpired(cmd=args[0] if args else "git push",
+                                 timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(ns.subprocess, "run", _hangs)
+    tree = wt_mod.Worktree(path=tmp_path, branch="nightshift/x/1", repo=tmp_path)
+
+    ok = ns.push_branch(tree, story_key="x/1")
+
+    assert ok is False
+    entries = [e for e in ns.read_ledger() if e.get("event") == "push-failed"]
+    assert len(entries) == 1
+    assert entries[0]["story_key"] == "x/1"
+    assert "timed out" in entries[0]["stderr"]
+
+
+def test_a_hanging_pr_create_times_out_rather_than_hanging_the_shift(swarm_home, tmp_path, monkeypatch):
+    import subprocess as sp
+
+    from swarm import bmad as bmad_mod
+    from swarm import worktree as wt_mod
+
+    def _hangs(*args, **kwargs):
+        raise sp.TimeoutExpired(cmd=args[0] if args else "gh pr create",
+                                 timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(ns.subprocess, "run", _hangs)
+    tree = wt_mod.Worktree(path=tmp_path, branch="nightshift/x/1", repo=tmp_path)
+    story = bmad_mod.Story(id="1", title="T", description="D", spec_dir=tmp_path)
+
+    pr = ns.open_pr(tree, story)
+
+    assert pr == ""
+    entries = [e for e in ns.read_ledger() if e.get("event") == "pr-failed"]
+    assert len(entries) == 1
+    assert "timed out" in entries[0]["stderr"]
+
+
+def test_a_hanging_local_git_read_is_treated_as_could_not_tell_not_a_crash(monkeypatch, tmp_path):
+    """`_git_out` feeds `run_story_shift`'s base-sha and diff reads, both of
+    which already treat `ok=False` as "refuse to guess" rather than a crash.
+    A timeout must land there too, not raise past it."""
+    import subprocess as sp
+
+    def _hangs(*args, **kwargs):
+        raise sp.TimeoutExpired(cmd="git", timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(ns.subprocess, "run", _hangs)
+
+    ok, out = ns._git_out(tmp_path, "rev-parse", "HEAD")
+
+    assert ok is False
+    assert out == ""
+
+
+def test_worktree_git_translates_a_hang_into_a_failed_result_not_a_crash(monkeypatch, tmp_path):
+    """Every caller of `worktree._git` (`create`, `dispose`, `orphans`)
+    already checks `.returncode` and handles a failure correctly -- a hang
+    reaching them as `TimeoutExpired` instead would be a second, unhandled
+    error shape none of them expect."""
+    import subprocess as sp
+
+    from swarm import worktree as wt_mod
+
+    def _hangs(*args, **kwargs):
+        raise sp.TimeoutExpired(cmd="git", timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(wt_mod.subprocess, "run", _hangs)
+
+    result = wt_mod._git(tmp_path, "status")
+
+    assert result.returncode != 0
+    assert "timed out" in result.stderr
+
+
 def test_apply_true_verified_pushes_and_opens_a_pr(swarm_home, tmp_path, monkeypatch):
     from swarm import queue
     repo = _bmad_repo(tmp_path, ONE_STORY)

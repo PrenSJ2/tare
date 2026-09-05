@@ -1913,14 +1913,28 @@ def run_story_shift(
     return shift
 
 
-def _git_out(cwd: Path, *args: str) -> tuple[bool, str]:
+def _git_out(cwd: Path, *args: str, timeout: int = 15) -> tuple[bool, str]:
     """(ok, stdout). A non-zero exit is not "no output": `git diff` against a
     base that failed to resolve exits 0 with nothing to show, which reads as
     "no changes" rather than "we could not tell". Both call sites in
     `run_story_shift` check `ok` before trusting the text.
+
+    This and `push_branch`/`open_pr` below, plus `worktree._git`, used to be
+    the only subprocess calls in this file with no `timeout=` at all -- every
+    other one (`branch_of`, `is_dirty`, `commits_since`, the dispatchers) has
+    carried one since the module was written. `max_minutes` is only checked
+    at the top of the loop, so nothing bounded a hang here: a local `git`
+    wedged on a corrupt index would sit forever with the lock held and the
+    ledger showing `start` and nothing after it -- the one path in this
+    module where the loop dies silently rather than closing the ledger.
+    `TimeoutExpired` is treated the same as the non-zero exit this function
+    already distinguishes from real output: `ok=False`, nothing trusted.
     """
-    result = subprocess.run(["git", "-C", str(cwd), *args],
-                            capture_output=True, text=True)
+    try:
+        result = subprocess.run(["git", "-C", str(cwd), *args],
+                                capture_output=True, text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return False, ""
     return result.returncode == 0, result.stdout
 
 
@@ -1947,13 +1961,27 @@ def dispatch_story(story, *, worktree, timeout_minutes: int) -> tuple[int, str, 
     return result.returncode, (result.stdout or result.stderr or ""), time.monotonic() - started
 
 
-def push_branch(tree, *, story_key: str) -> bool:
-    """Push the story branch. The hook is what makes this safe, not this call."""
+def push_branch(tree, *, story_key: str, timeout: int = 120) -> bool:
+    """Push the story branch. The hook is what makes this safe, not this call.
+
+    `timeout` is generous because this is a network call: `git push` blocks
+    on `/dev/tty` for credentials or an SSH host-key confirmation with
+    nothing there to answer it, and `max_minutes` is not checked again until
+    the top of the next loop pass -- so an unbounded push here is the one
+    realistic way this module hangs the whole night silently, lock held,
+    ledger reading `start` and nothing after it. `TimeoutExpired` is handled
+    exactly like the `OSError` case just below: a `push-failed` ledger entry,
+    not a crash, and the story stays open for tomorrow.
+    """
     try:
         result = subprocess.run(
             ["git", "-C", str(tree.path), "push", "-u", "origin",
              f"HEAD:refs/heads/{tree.branch}"],
-            capture_output=True, text=True, env=child_env())
+            capture_output=True, text=True, env=child_env(), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        record({"event": "push-failed", "story_key": story_key, "branch": tree.branch,
+                "stderr": f"git push timed out after {timeout}s"})
+        return False
     except OSError as exc:
         record({"event": "push-failed", "story_key": story_key, "branch": tree.branch,
                 "stderr": f"could not run git: {exc}"})
@@ -1967,8 +1995,16 @@ def push_branch(tree, *, story_key: str) -> bool:
     return result.returncode == 0
 
 
-def open_pr(tree, story) -> str:
-    """Open a PR for a verified story. Never merges it."""
+def open_pr(tree, story, *, timeout: int = 120) -> str:
+    """Open a PR for a verified story. Never merges it.
+
+    Network call, so the timeout is generous -- see `push_branch` for why an
+    unbounded one here is the one path in this module that hangs the shift
+    silently rather than closing the ledger. `TimeoutExpired` is handled like
+    the `OSError` case below: a `pr-failed` entry, not a crash. The branch is
+    already pushed by this point, so a hung `gh` costs a missing PR, not the
+    work itself.
+    """
     try:
         result = subprocess.run(
             ["gh", "pr", "create", "--head", tree.branch,
@@ -1976,7 +2012,12 @@ def open_pr(tree, story) -> str:
              "--body", f"Implemented unattended from `{story.spec_dir}`.\n\n"
                        f"{story.description}\n\nVerified against the story's "
                        f"acceptance criteria. Not merged: read it first."],
-            cwd=str(tree.path), capture_output=True, text=True, env=child_env())
+            cwd=str(tree.path), capture_output=True, text=True, env=child_env(),
+            timeout=timeout)
+    except subprocess.TimeoutExpired:
+        record({"event": "pr-failed", "story_key": story.key, "branch": tree.branch,
+                "stderr": f"gh pr create timed out after {timeout}s"})
+        return ""
     except OSError as exc:
         record({"event": "pr-failed", "story_key": story.key, "branch": tree.branch,
                 "stderr": f"could not run gh: {exc}"})

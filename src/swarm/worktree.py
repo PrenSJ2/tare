@@ -110,9 +110,25 @@ class Worktree:
     repo: Path
 
 
-def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(repo), *args],
-                          capture_output=True, text=True)
+def _git(repo: Path, *args: str, timeout: int = 15) -> subprocess.CompletedProcess:
+    """Local git only -- nothing in this module pushes or fetches, so 15s is
+    generous rather than tight.
+
+    Translates a hang into a failed `CompletedProcess` rather than letting
+    `TimeoutExpired` propagate: every caller here (`create`, `dispose`,
+    `orphans`, `install_hook`) already checks `.returncode` and handles a
+    failure correctly -- `create` raises `RuntimeError`, `dispose` leaves the
+    tree in place, `orphans` raises rather than reporting an empty list. A
+    synthetic non-zero result reuses all of that instead of adding a second,
+    parallel error path each caller would need its own handling for.
+    """
+    try:
+        return subprocess.run(["git", "-C", str(repo), *args],
+                              capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args=["git", "-C", str(repo), *args], returncode=124, stdout="",
+            stderr=f"git {' '.join(args)} timed out after {timeout}s")
 
 
 def branch_for(slug: str, story_id: str) -> str:
