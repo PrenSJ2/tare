@@ -79,14 +79,25 @@ def test_the_production_check_does_not_fire_on_past_tense_description(text):
 
 
 @pytest.mark.parametrize("text", [
-    "Record that the first migration is in and move on",
-    "Document that we rotated the key last week",
-    "Document that the .env file is explained in the README already",
+    # The opener is "run", which IS in the migration verb list -- this proves
+    # the guard is the right-hand modifier check, not merely that "record" or
+    # "document" happen to be absent from any list.
+    "Run the migration guide updates before merging",
+    # The opener is "rotate", which IS in the credential verb list -- proves
+    # the object (an on-call schedule, not a secret) is what saves it.
+    "Rotate the on-call schedule for next week",
+    # The opener is "update", which IS in the .env verb list -- proves the
+    # missing value word (not the verb's absence) is what saves it.
+    "Update the .env file documentation in the wiki",
 ])
-def test_past_tense_description_passes_the_whole_gate_when_actionable(text):
-    """Same three sentences, wrapped so `names_an_action` also agrees there is
-    work here -- proving the gate as a whole, not just the matcher in
-    isolation, still lets ordinary descriptive prose through.
+def test_a_listed_verb_with_a_harmless_object_still_passes(text):
+    """A reviewer flagged the previous version of this test: its openers
+    ("Record", "Document") sat outside all three tier-2 verb lists, so it
+    proved only that those two words weren't listed, and would have passed
+    under any widening of the patterns. These openers are drawn FROM the
+    lists the fixes added to, paired with an object the right-hand guard (for
+    migration) or the missing value word (for credentials and `.env`) must
+    still recognise as harmless.
     """
     verdict = ns.screen(text)
     assert verdict.ok, f"should have allowed: {text} ({verdict.reason})"
@@ -97,15 +108,106 @@ def test_past_tense_description_passes_the_whole_gate_when_actionable(text):
     "Kick off the pending migrations before the release",
     "Rotate our production credential immediately",
     "Update the production .env with new secrets",
+    # Added verbs beyond rotate/revoke: taking an old credential OUT of use
+    # isn't the only dangerous direction -- putting a new one in is too.
+    "Replace the leaked production API key with a fresh one",
+    # The value word sits BEFORE `.env` here, not after -- the other half of
+    # the two-sided .env check.
+    "Write the new production credentials into the .env file",
+    # Path-qualified: `_FEW_WORDS` cannot cross the `/` in `backend/.env`, so
+    # this used to reach neither .env pattern at all.
+    "Update backend/.env with the live Stripe key",
+    "Update config/.env with the live Stripe key",
+    "Edit ~/.env and drop the live key in",
 ])
 def test_the_gate_refuses_the_forward_looking_shape_with_words_between(text):
-    """The three fixed patterns tolerant of a FEW intervening words, not any
-    number of them -- proven separately by
-    `test_the_production_check_does_not_fire_on_past_tense_description`.
+    """The fixed patterns tolerate a FEW intervening words and a path prefix,
+    not any number of either -- proven separately by
+    `test_the_production_check_does_not_fire_on_past_tense_description` and
+    `test_a_verb_with_the_trigger_word_still_passes_when_unrelated`.
     """
     verdict = ns.screen(text)
     assert not verdict.ok, f"should have refused: {text}"
     assert verdict.matched, "a refusal must name the phrase that caused it"
+    assert "\n" not in verdict.matched, "a ledger line must not carry a newline"
+
+
+# --- the false-refusal corpus -----------------------------------------------
+#
+# A code review of the first version of these fixes ran a 36-sentence corpus
+# through `screen()` and found 19 wrongly refused -- several of them the
+# exact sentences the two-tier design exists to protect. Below is that
+# corpus, reconstructed from the review: every sentence here is ordinary,
+# harmless work that happens to contain `migration`, `.env`, or a credential
+# verb, and every one of them must pass. See the task report for the
+# before/after refusal count measured against this corpus.
+
+_MIGRATION_FALSE_REFUSALS = [
+    # "migration"/"migrations" as an attributive modifier of something else --
+    # a test suite, a doc, a guide, a naming convention, an audit -- not the
+    # object of the directive verb. All six were refused before the
+    # right-hand guard existed, because `run`/`apply`/`do`/`start`/`perform`
+    # are also some of the commonest openers in `_ACTION_STEMS`.
+    "Run the migrations module tests",
+    "Run the migration test fixtures through the new parser",
+    "Do the migration docs review before the release notes",
+    "Start the migration guide rewrite",
+    "Apply the migration naming convention to the older files",
+    "Perform the migration audit and write it up",
+]
+
+_ENV_FALSE_REFUSALS = [
+    # `add`/`write`/`update` are how you write ABOUT `.env`, not TO it. The
+    # gitignore case is the sharpest: it is the protective action, and the
+    # old verb list refused the thing that prevents the leak.
+    "add .env to .gitignore",
+    "Add .env and .env.local to .gitignore",
+    "Add the .env note to the README",
+    "Write the .env section of the setup guide",
+    # A committed placeholder file, not a secret -- editing one is routine.
+    "Update the .env.example with the two new vars",
+]
+
+_CLAUSE_BRIDGE_FALSE_REFUSALS = [
+    # A verb governs an unrelated noun three words later, across a
+    # punctuation mark that must stop the bridge on its own.
+    "Run the linter, the migration is already in",
+    "Update the README; the .env is documented there",
+]
+
+_STORY_BLOB_FALSE_REFUSALS = [
+    # `run_story_shift` screens `f"{title}\n{description}\n{invoke_dev_with}"`
+    # as one blob (nightshift.py:1427). A verb in the TITLE used to reach into
+    # the DESCRIPTION across the joining newline, because `_FEW_WORDS` used
+    # `\s`, which treats a newline exactly like a space.
+    "Run the auth refactor\nMigrations are already applied on staging",
+    "Update the docs\nDotenv handling is described in config.py.",
+]
+
+
+@pytest.mark.parametrize(
+    "text",
+    _MIGRATION_FALSE_REFUSALS + _ENV_FALSE_REFUSALS
+    + _CLAUSE_BRIDGE_FALSE_REFUSALS + _STORY_BLOB_FALSE_REFUSALS,
+)
+def test_the_false_refusal_corpus_now_passes(text):
+    verdict = ns.screen(text)
+    assert verdict.ok, f"should have allowed: {text} ({verdict.reason})"
+
+
+def test_the_false_refusal_corpus_refusal_rate():
+    """The measurement the fix is actually for, not just a pass/fail list.
+
+    Kept as its own test (rather than folding into the parametrized one
+    above) so a regression shows up as a count, which is what a reviewer
+    asked for -- and so CI prints the rate even if every individual case also
+    has its own assertion elsewhere.
+    """
+    corpus = (_MIGRATION_FALSE_REFUSALS + _ENV_FALSE_REFUSALS
+              + _CLAUSE_BRIDGE_FALSE_REFUSALS + _STORY_BLOB_FALSE_REFUSALS)
+    refused = [t for t in corpus if not ns.screen(t).ok]
+    assert refused == [], (
+        f"{len(refused)}/{len(corpus)} descriptive sentences wrongly refused: {refused}")
 
 
 @pytest.mark.parametrize("text", [

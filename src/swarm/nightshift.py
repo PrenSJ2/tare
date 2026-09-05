@@ -269,15 +269,58 @@ _PRODUCTION_COMMANDS: tuple[tuple[str, str], ...] = (
     (r"\brm\s+-rf\b", "deletes recursively"),
 )
 
-# A handful of words, not a sentence. Bridges "rotate the API key" and "run
-# the database migration" without reaching far enough to swallow the next
-# clause. Tried first as `.*` between verb and object; that matched cleanly
-# across sentence boundaries too, which is the opposite of what this needs,
-# so it was walked back to a bounded budget of ordinary words. `[a-z']+\s+`
-# demands an actual word followed by actual whitespace, so a period or comma
-# breaks the chain rather than being swallowed by it -- the bound is not just
-# a count, it is punctuation-aware for free.
-_FEW_WORDS = r"(?:[a-z']+\s+){0,3}"
+# A handful of words, not a sentence. Bridges "rotate the leaked production
+# API key" and "run the database migration" without reaching far enough to
+# swallow the next clause. Tried first as `.*` between verb and object; that
+# matched cleanly across sentence boundaries too, which is the opposite of
+# what this needs, and a reviewer confirmed it by patching `_FEW_WORDS` back
+# to `.*` and watching the whole negative-test suite still pass -- so it was
+# walked back to a bounded budget of ordinary words, and MEASURED to need 4:
+# "rotate the leaked production API" is four modifiers before the object.
+#
+# `[a-z']+[ \t]+` -- not `\s` -- demands an actual word followed by actual
+# HORIZONTAL whitespace. That distinction is not cosmetic: `run_story_shift`
+# screens `f"{story.title}\n{story.description}\n{story.invoke_dev_with}"` as
+# one blob (see `build_story_command`), so a verb in a story's TITLE used to
+# be able to reach into its DESCRIPTION across the joining newline --
+# "Run the auth refactor\nMigrations are already applied on staging" matched,
+# wrongly, because `\s` treats a newline exactly like a space. `[ \t]`
+# doesn't, so the bridge now stops at the line it started on.
+#
+# Deliberately NOT excluded: "and"/"then"/"so" mid-line. That was tried too,
+# to stop a bridge from hopping between two unrelated clauses on one line,
+# and reverted -- it also breaks "Edit ~/.env and drop the live key in",
+# which is one real instruction split by "and" into two halves of the same
+# action and must still refuse. A period, comma, or semicolon still ends the
+# bridge on its own, since none of those are letters; a same-line
+# conjunction joining two related clauses about the same object does not,
+# and that tradeoff is intentional, not an oversight.
+_FEW_WORDS = r"(?:[a-z']+[ \t]+){0,4}"
+
+# Nouns that turn `migration`/`migrations` into a modifier of something else
+# -- "the migration GUIDE", "migration DOCS", "migrations MODULE tests" --
+# rather than the object a directive verb is about to act on. Found by
+# running a corpus of ordinary migration-adjacent work (docs, tests, audits,
+# naming reviews) through the verb-only version of the pattern below: it
+# refused all of it, because `run`/`apply`/`do`/`start` are also some of the
+# commonest openers in `_ACTION_STEMS`, and a repo with a `migrations/`
+# directory generates this sentence shape constantly. A governing verb is
+# necessary but not sufficient; this guards the noun's other side.
+_MIGRATION_MODIFIERS = (
+    r"docs?|guide|tests?|module|file|script|runner|folder|dir(?:ectory)?|"
+    r"naming|notes?|history|audit|review|convention|plan|checklist|report"
+)
+
+# `.env`, path-qualified or not, and the value word that makes touching it
+# dangerous rather than incidental. `[\w./~-]*` lets the object be
+# `backend/.env` or `~/.env`, not only a bare `.env` preceded by whitespace --
+# a real gap: `_FEW_WORDS` cannot cross the `/` in `backend/.env`, so the
+# path-qualified form used to reach none of the patterns below at all.
+# `.env.example`/`.sample`/`.template` are excluded because they are commit-
+# ted placeholder files, not secrets -- editing one is routine.
+_ENV_TOKEN = r"(?:[\w./~-]*\.env|dotenv)(?!\.(?:example|sample|template))\w*"
+_ENV_VALUE = r"(?:key|token|secret|credential|password|value)s?"
+_ENV_VERBS = r"(?:update|edit|modify|change|write|set|put|add|store|rotate|swap)"
 
 # Tier 2 — verbs that only block when the sentence is FORWARD-LOOKING. Base
 # form only: `deployed`, `deploying`, `deployment` and `publish-gate` are
@@ -285,42 +328,54 @@ _FEW_WORDS = r"(?:[a-z']+\s+){0,3}"
 # `rotate` already excludes `migrated` and `rotated` the same way a bare-word
 # match always has.
 #
-# `migration`/`migrations` is the one entry below that is a NOUN rather than a
-# verb, and it earns a different shape because of it. "the first migration is
-# in" (a real, measured false refusal -- see the module comment above) is
-# past tense wearing a present-tense-looking noun, and no tense trick
-# distinguishes it from "Run the database migration for the new column",
-# which must block. What DOES distinguish them is whether a directive verb
-# governs the noun: the first sentence has none, the second is governed by
-# "Run". So the pattern requires one of a short list of directive verbs --
-# run, apply, execute, perform, start, do, kick off, trigger -- within a few
-# words of `migrations?`, rather than matching the noun on its own. A past-
-# tense description has nothing governing the noun and passes; an instruction
-# to run one does not. This is the asymmetry from the header comment applied
-# literally: a false refusal costs one night, a false pass costs a database,
-# so the noun form does not get left out just because handling it correctly
-# takes more than a bare word.
+# `migration`/`migrations` and `.env`/`dotenv` are the two entries below that
+# are NOUNS rather than verbs or verb+object idioms, and they earn a
+# different shape because of it. "the first migration is in" (a real,
+# measured false refusal -- see the module comment above) and "the .env is
+# documented in the README" are both past tense or plain description wearing
+# a present-tense-looking noun, and no tense trick distinguishes either from
+# an instruction to act on the same noun. What DOES distinguish them is
+# whether something governs the noun: "the first migration is in" has
+# nothing governing it; "Run the database migration" is governed by "Run";
+# "the .env is documented" has no verb touching it and no value word near it;
+# "Update the .env with the live key" has both. So each pattern requires a
+# governing verb -- and, for `.env`, a nearby value word too, since `add
+# .env to .gitignore` and `add the live key to .env` share a verb but only
+# one of them is dangerous. A description has nothing governing the noun and
+# passes; an instruction to act on it does not. This is the asymmetry from
+# the header comment applied literally: a false refusal costs one night, a
+# false pass costs a database, so the noun forms do not get left out just
+# because handling them correctly takes more than a bare word.
 _PRODUCTION_VERBS = (
     (r"deploy", "deploys"), (r"release", "releases"), (r"publish", "publishes"),
     (r"migrate", "runs a migration"), (r"ship\s+(it|this|to)", "ships"),
-    (rf"(?:run|apply|execute|perform|start|do|kick[- ]off|trigger)\s+{_FEW_WORDS}migrations?",
+    (rf"(?:run|apply|execute|perform|start|do|kick[- ]off|trigger)[ \t]+{_FEW_WORDS}"
+     rf"migrations?(?![ \t]+(?:{_MIGRATION_MODIFIERS})\b)",
      "runs a migration"),
     (r"push\s+(to\s+)?(main|master|origin|upstream|remote)", "pushes"),
     (r"merge\s+(to\s+|into\s+)?(main|master)", "merges to a default branch"),
-    (rf"(rotate|revoke)\s+{_FEW_WORDS}(key|token|secret|credential)s?", "touches credentials"),
+    # `rotate|revoke` covers "take an old credential out of use"; `replace|
+    # regenerate|reissue|reset|generate` covers "put a new one in its place"
+    # -- "Replace the leaked production API key" is the same class of danger
+    # and was reaching neither list before.
+    (rf"(?:rotate|revoke|replace|regenerate|reissue|reset|generate)[ \t]+{_FEW_WORDS}"
+     rf"{_ENV_VALUE}", "touches credentials"),
     (r"charge\s+(the\s+|a\s+)?(card|customer|user|guest)", "takes a payment"),
     (r"go\s+live", "goes live"),
     (r"email\s+(the\s+|our\s+)?(customers?|users?|guests?|hosts?)", "contacts people"),
     # `.env` is not ordinary prose the way `deploy` is -- nobody writes the
-    # string by accident -- which argues for tier 1. It sits in tier 2 anyway,
-    # because "the .env is documented in the README" is exactly the sentence
-    # this tier exists to let through: true, harmless, and containing the
-    # string regardless. What is dangerous is WRITING to it, so this matches
-    # a verb that changes something -- update, edit, modify, write, set, put,
-    # add, store, rotate, swap -- within a few words of `.env`/`dotenv`, the
-    # same shape as the migration entry above and for the same reason.
-    (rf"(?:update|edit|modify|change|write|set|put|add|store|rotate|swap)\s+{_FEW_WORDS}"
-     r"(?:\.env\b|dotenv\b)", "touches a .env file"),
+    # string by accident -- which argues for tier 1. It sits in tier 2
+    # anyway, because "the .env is documented in the README" is exactly the
+    # sentence this tier exists to let through: true, harmless, and
+    # containing the string regardless. Tier 1 would have refused that
+    # description outright, which is the same failure mode this whole
+    # redesign exists to fix. Two entries, value-before and value-after,
+    # because the value word can sit on either side: "write the new
+    # credentials into the .env file" vs "update the .env with the live key".
+    (rf"{_ENV_VERBS}[ \t]+{_FEW_WORDS}{_ENV_VALUE}[ \t]+{_FEW_WORDS}{_ENV_TOKEN}",
+     "touches a .env file"),
+    (rf"{_ENV_VERBS}[ \t]+{_FEW_WORDS}{_ENV_TOKEN}[ \t]+{_FEW_WORDS}{_ENV_VALUE}",
+     "touches a .env file"),
 )
 
 # What makes a sentence forward-looking. The verb must follow one of these
@@ -394,6 +449,14 @@ _ACTION_STEMS = (
     "batch", "retry", "seed", "sort", "group", "swap", "raise", "lower",
     "widen", "narrow", "prefer", "switch", "keep", "show", "print", "emit",
     "track", "stub", "assert", "drop", "merge", "skip", "collapse", "hoist",
+    # A third pass, found the same way: a false-refusal corpus built for the
+    # `.env`/migration/credential gate fixes above contained real instructions
+    # -- "Start the migration guide rewrite", "Do the migration docs review",
+    # "Perform the migration audit", "Rotate the on-call schedule" -- that the
+    # PRODUCTION check correctly let through and this list then refused
+    # anyway, for an unrelated reason, because none of these four verbs had
+    # ever been added.
+    "do", "start", "perform", "rotate",
 )
 
 
@@ -526,7 +589,12 @@ def screen(recommendation: str) -> Verdict:
     lowered = text.lower()
     hit = _production_hit(lowered)
     if hit:
-        return Verdict(False, f"the recommendation {hit[1]}", matched=hit[0])
+        # Collapsed: `matched` is what a human reads in the ledger at 8am, and
+        # a story's title/description blob (see `_FEW_WORDS`) can put a
+        # newline or a run of tabs inside a match even though the match
+        # itself never crosses one.
+        matched = re.sub(r"\s+", " ", hit[0]).strip()
+        return Verdict(False, f"the recommendation {hit[1]}", matched=matched)
 
     if not names_an_action(text):
         return Verdict(False, "the recommendation names no action to carry out")
