@@ -307,3 +307,91 @@ def test_partial_pairing_states_the_total_is_unknown(swarm_home):
     text = doctor.render(doctor.inspect(path))
     assert "1 of 2" in text
     assert "unknown" in text
+
+
+# --- BMAD drift -------------------------------------------------------------
+#
+# Their layout is our API. Issue #1785 and #1002 show BMAD's own templates
+# drifting from BMAD's own validators, so ours will drift too. The rule is
+# that drift is reported AS DRIFT: an empty queue and a queue we can no longer
+# read must never look the same.
+
+from pathlib import Path
+
+from swarm import doctor as doc
+
+
+def _install(repo: Path, stories_yaml: str, slug="spec-alpha"):
+    cfg = repo / "_bmad" / "bmm"
+    cfg.mkdir(parents=True, exist_ok=True)
+    (cfg / "config.yaml").write_text("project_name: demo\n")
+    d = repo / "_bmad-output" / "specs" / slug
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SPEC.md").write_text("# spec\n")
+    (d / "stories.yaml").write_text(stories_yaml)
+
+
+def test_a_healthy_install_reports_ok(tmp_path):
+    _install(tmp_path, '- id: "1"\n  title: T\n  description: D\n')
+    levels = [lvl for lvl, _ in doc.check_bmad(tmp_path)]
+    assert "fail" not in levels
+
+
+def test_a_missing_install_is_reported_not_silently_empty(tmp_path):
+    findings = doc.check_bmad(tmp_path)
+    assert any(lvl == "warn" and "no BMAD install" in msg for lvl, msg in findings)
+
+
+def test_an_unreadable_stories_file_names_the_rule_it_broke(tmp_path):
+    _install(tmp_path, "- id: 1\n  title: T\n  description: D\n")
+    findings = doc.check_bmad(tmp_path)
+    assert any(lvl == "fail" and "rule 4" in msg for lvl, msg in findings)
+
+
+def test_a_planned_but_unbroken_down_spec_is_reported(tmp_path):
+    _install(tmp_path, '- id: "1"\n  title: T\n  description: D\n')
+    lonely = tmp_path / "_bmad-output" / "specs" / "spec-planned"
+    lonely.mkdir(parents=True)
+    (lonely / "SPEC.md").write_text("# planned only\n")
+    findings = doc.check_bmad(tmp_path)
+    assert any("spec-planned" in msg for _, msg in findings)
+
+
+def test_an_orphaned_worktree_is_reported(tmp_path):
+    import subprocess
+    from swarm import worktree as wt
+
+    repo = tmp_path / "work"
+    repo.mkdir()
+    for args in (["init", "-q", "-b", "feature/x"],
+                 ["config", "user.email", "t@example.com"],
+                 ["config", "user.name", "T"]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True)
+    (repo / "f.txt").write_text("x\n")
+    subprocess.run(["git", "-C", str(repo), "add", "f.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "i"], check=True)
+    _install(repo, '- id: "1"\n  title: T\n  description: D\n')
+    wt.create(repo, slug="spec-alpha", story_id="1")
+
+    findings = doc.check_bmad(repo)
+    assert any("orphaned worktree" in msg for _, msg in findings)
+
+
+def test_a_git_worktree_list_failure_is_a_finding_not_an_empty_queue(tmp_path, monkeypatch):
+    """`worktree.orphans` now raises `RuntimeError` when `git worktree list`
+    itself fails, precisely so an empty result is never mistaken for "no
+    orphans". `check_bmad` must not let that exception escape, and must not
+    swallow it into a report that reads as clean -- it must appear as a
+    "fail" finding.
+    """
+    from swarm import worktree as wt
+
+    _install(tmp_path, '- id: "1"\n  title: T\n  description: D\n')
+
+    def _boom(repo):
+        raise RuntimeError("could not list worktrees for demo (git exploded)")
+
+    monkeypatch.setattr(wt, "orphans", _boom)
+
+    findings = doc.check_bmad(tmp_path)
+    assert any(lvl == "fail" and "git exploded" in msg for lvl, msg in findings)

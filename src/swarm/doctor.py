@@ -217,3 +217,81 @@ def render(rep: Report, extra_problems: list[str] | None = None) -> str:
     else:
         lines.append("No problems found.")
     return "\n".join(lines)
+
+
+def check_bmad(repo: Path) -> list[tuple[str, str]]:
+    """Is this repository's BMAD install still one the queue can read?
+
+    BMAD's layout is an API we do not control, and their own issue tracker
+    shows their templates drifting from their own validators. So the job here
+    is narrow and important: make drift LOOK like drift. A `stories.yaml` we
+    can no longer parse and a project with no work left must never produce the
+    same silence.
+
+    `worktree.orphans` can itself raise `RuntimeError` when `git worktree
+    list` fails -- deliberately, so an empty result is never confused with
+    "nothing to clean up". That exception is caught here and reported as a
+    "fail" finding rather than allowed to escape or read as a clean run: a
+    doctor that goes silent because git broke is exactly the failure this
+    function exists to prevent.
+
+    Read-only with respect to `_bmad/` and `_bmad-output/`, and creates,
+    moves or removes no worktree -- it only reads what `bmad` and `worktree`
+    already expose.
+    """
+    from . import bmad, worktree
+
+    findings: list[tuple[str, str]] = []
+
+    if not bmad.is_installed(repo):
+        return [("warn", f"no BMAD install: {bmad.config_path(repo)} is not there. "
+                         "`swarm nightshift --queue bmad` will refuse to start.")]
+
+    folders = bmad.spec_folders(repo)
+    if not folders:
+        findings.append(("warn", f"no spec folder with a stories.yaml under "
+                                 f"{bmad.output_root(repo) / 'specs'}"))
+
+    total = 0
+    for folder in folders:
+        try:
+            stories = bmad.parse_stories(
+                (folder / "stories.yaml").read_text(encoding="utf-8", errors="replace"),
+                spec_dir=folder)
+        except bmad.BmadFormatError as exc:
+            findings.append(("fail", f"{folder.name}/stories.yaml cannot be read: {exc}"))
+            continue
+        total += len(stories)
+        findings.append(("ok", f"{folder.name}: {len(stories)} stories"))
+
+    # Planned but not broken down: real work the loop cannot dispatch. Named
+    # rather than skipped, because "no stories" here means "not ready", not
+    # "nothing to do".
+    specs_root = bmad.output_root(repo) / "specs"
+    if specs_root.is_dir():
+        for d in sorted(specs_root.iterdir()):
+            if d.is_dir() and (d / "SPEC.md").is_file() and not (d / "stories.yaml").is_file():
+                findings.append(("warn", f"{d.name}: has SPEC.md but no stories.yaml -- "
+                                         "planned, not broken down, not dispatchable"))
+
+    # `orphans` raises rather than returning [] when `git worktree list`
+    # itself fails -- an empty list there would be indistinguishable from "no
+    # orphans", and `worktree.create`'s own error message sends an operator
+    # here on that assumption. Reported as a failed check, not swallowed into
+    # silence and not allowed to crash the rest of this report.
+    try:
+        orphaned = worktree.orphans(repo)
+    except RuntimeError as exc:
+        findings.append(("fail", f"could not check for orphaned worktrees: {exc}"))
+    else:
+        for path, ref in orphaned:
+            # `ref` is a branch name under `worktree.ALLOWED_REF_PREFIX`, or
+            # the literal string "detached" for a detached-HEAD worktree --
+            # this phrasing reads sensibly either way.
+            findings.append(("warn", f"orphaned worktree {path} (ref: {ref}) -- a shift did "
+                                     "not dispose of it; remove it by hand once you have "
+                                     "read it"))
+
+    if total and not any(lvl == "fail" for lvl, _ in findings):
+        findings.append(("ok", f"{total} stories readable across {len(folders)} spec folders"))
+    return findings
