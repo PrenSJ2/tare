@@ -5,7 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from swarm import bmad, doctor, install, paths
+from swarm import bmad, doctor, install, nightshift, paths
 
 
 def _newest_stream():
@@ -330,9 +330,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_night.add_argument("--window", action="store_true",
                          help="restrict story mode to the 21:00-07:00 night window "
                               "(session mode always uses it)")
-    p_night.add_argument("--max-steps", type=int, default=6, dest="max_steps")
-    p_night.add_argument("--max-minutes", type=int, default=240, dest="max_minutes")
-    p_night.add_argument("--step-timeout", type=int, default=45, dest="step_timeout",
+    p_night.add_argument("--max-steps", type=int, default=nightshift.DEFAULT_MAX_STEPS,
+                         dest="max_steps")
+    p_night.add_argument("--max-minutes", type=int, default=nightshift.DEFAULT_MAX_MINUTES,
+                         dest="max_minutes")
+    p_night.add_argument("--step-timeout", type=int,
+                         default=nightshift.DEFAULT_STEP_TIMEOUT_MINUTES, dest="step_timeout",
                          help="minutes one continuation may take")
     p_night.add_argument("--since-hours", type=float, dest="since_hours",
                          help="recap only: how far back to read")

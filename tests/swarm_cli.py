@@ -121,7 +121,7 @@ def test_queue_defaults_to_session_mode(capsys):
     """The existing behaviour is the default. Story mode is opted into."""
     from swarm import cli
     parser = cli.build_parser()
-    args = parser.parse_args(["nightshift", "start", "--session", "abc"])
+    args = parser.parse_args(["nightshift", "start", "abc"])
     assert args.queue == "session"
 
 
@@ -144,3 +144,15 @@ def test_the_window_can_be_restored():
     parser = cli.build_parser()
     args = parser.parse_args(["nightshift", "start", "--queue", "bmad", "--window"])
     assert args.window is True
+
+
+def test_nightshift_defaults_track_the_module_constants():
+    """The CLI's defaults must be the same object as nightshift's, not a copy
+    of today's value -- otherwise tuning the constant in nightshift.py leaves
+    the CLI quietly running the old number until someone notices overnight."""
+    from swarm import cli, nightshift
+    parser = cli.build_parser()
+    args = parser.parse_args(["nightshift", "start", "abc"])
+    assert args.max_steps == nightshift.DEFAULT_MAX_STEPS
+    assert args.max_minutes == nightshift.DEFAULT_MAX_MINUTES
+    assert args.step_timeout == nightshift.DEFAULT_STEP_TIMEOUT_MINUTES
