@@ -30,6 +30,24 @@ with the asymmetry, not with certainty.
 The prompt asks for the JSON and nothing else. A verifier that echoes the
 schema after concluding would result in last-match-wins selecting a stale
 schema over the real verdict. This is considered rather than missed.
+
+A second, larger one: `acceptance_criteria` below reads `stories/<id>-*.md`
+whole into `{criteria}`, and that file never goes through `nightshift.screen`.
+`screen` covers `title` + `description` + `invoke_dev_with` -- the fields
+`run_story_shift` concatenates itself -- and stops there; it has never seen
+the spec markdown this function reads separately, straight off disk. So the
+artifact being judged supplies unscreened text to the judge, and this
+verdict is what removes a story from the queue PERMANENTLY. The same file
+also reaches `bmad-build-auto` under the wide policy at dispatch time,
+equally unscreened.
+
+Not fixed here, on purpose: screening free-form spec prose without false-
+refusing ordinary acceptance criteria ("delete the stale rows", "drop the
+unused index") is a bigger design change than a verifier module should carry
+as a side effect, and this repository has already spent several rounds
+learning how expensive a wrong keyword gate is (see `nightshift.py`'s
+`_PRODUCTION_VERBS` comment). Naming the gap here is the honest move
+available this round; closing it is not.
 """
 
 from __future__ import annotations

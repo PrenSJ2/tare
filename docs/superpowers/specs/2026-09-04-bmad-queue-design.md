@@ -110,6 +110,8 @@ one.
       {"status":"blocked", error_code, reason} -> record, park, advance
       {"status":"complete", files:[...]}       -> verify
  7  verify.check()      read-only claude -p: do the acceptance criteria hold against this diff?
+                        reads stories/<id>-*.md WHOLE into the prompt -- NOT
+                        screened by step 3's screen(); see note below
       verified     -> completion entry in ledger, push branch, gh pr create
       not verified -> record the gap, push the branch, open NO pr, story stays open
                       (the work is preserved and reviewable; it is not offered as done)
@@ -122,6 +124,21 @@ one.
 prompt now runs under a widened tool policy. It is an injection surface
 reaching straight at the loosest capability set in the system. It goes
 **through** `screen()`, never around it.
+
+### Step 7 also reads text step 3 never screened
+
+`verify.acceptance_criteria` reads `stories/<id>-*.md` whole into the
+verifier's prompt. `screen()` at step 3 covers `title` + `description` +
+`invoke_dev_with` -- the fields `run_story_shift` concatenates itself -- and
+has never seen this file, which is read separately, straight off disk. So the
+artifact being judged supplies unscreened text to the judge, and this verdict
+is what removes a story from the queue permanently. The same file also
+reaches `bmad-build-auto` at dispatch time, equally unscreened.
+
+Recorded rather than fixed: screening free-form spec prose without false-
+refusing ordinary acceptance criteria is a bigger change than this spec's
+scope, and the honest move available now is naming exactly what is screened
+and what is not, here and in `verify.py`'s own "Residual risk" section.
 
 ### Step 7 is what makes this development rather than a cron job
 
