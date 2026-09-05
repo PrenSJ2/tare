@@ -133,11 +133,14 @@ def test_a_listed_verb_with_a_harmless_object_still_passes(text):
     # stopped these two from blocking at all. See `_ENV_TOKEN`.
     "Update the .env.production with the live key",
     "Update .env.local with the live Stripe secret",
-    # No key/token/secret/credential/password word anywhere in this sentence
-    # -- what makes it dangerous is "the live database", which is what
-    # `_ENV_VALUE`'s environment-target vocabulary and the uncapped
-    # `_ENV_REACH` (see its comment) exist to catch.
-    "Update the .env so the app talks to the live database",
+    # Bare-imperative, story-title-shaped instructions where "and" joins two
+    # OBJECTS of the same verb ("the dump and the migrations"), not two
+    # clauses. Closing the false refusal this shape used to cause (excluding
+    # "and" from the budget) turned these into false PASSES instead, which is
+    # why that exclusion was reverted -- see the `_FEW_WORDS` comment. These
+    # two are the reason it had to be.
+    "Run the dump and the migrations tonight",
+    "Run the backfill and the migrations against prod",
 ])
 def test_the_gate_refuses_the_forward_looking_shape_with_words_between(text):
     """The fixed patterns tolerate a FEW intervening words and a path prefix,
@@ -188,13 +191,18 @@ def test_a_verb_placed_away_from_line_start_does_not_gain_dispatch(text):
 # through `screen()` and found 19 wrongly refused -- several of them the
 # exact sentences the two-tier design exists to protect. A second review ran
 # an independent, UNSEEN 50-sentence corpus and found the fix had moved
-# nothing on sentences it wasn't fitted to (9/25 wrongly refused, both
-# before and after) -- the flat number is the important part: it is the
-# reason this file does not claim the false-refusal rate went to zero in
-# general, only that it went to zero ON THE SENTENCES QUOTED BY NAME IN BOTH
-# REVIEWS, which is what is reconstructed below. See the module comment
-# beside `_PRODUCTION_VERBS` for what that distinction is worth and is not
-# worth. See the task report for the full before/after count.
+# nothing on sentences it wasn't fitted to (9 wrongly refused out of the
+# 25-sentence must-pass half, both before and after) -- the flat number is
+# the important part: it is the reason this file does not claim the
+# false-refusal rate went to zero in general, only that it went to zero ON
+# THE SENTENCES QUOTED BY NAME ACROSS ALL REVIEWS, which is what is
+# reconstructed below. A THIRD review, of that round's fixes, found two of
+# them individually made things worse on unseen prose (see the `_FEW_WORDS`
+# and `_ENV_TOKEN`/`_ENV_VALUE` comments for what was reverted and why), so
+# this corpus also carries the sentences that exposed those regressions.
+# See the module comment beside `_PRODUCTION_VERBS` for what the whole
+# exercise is worth and is not worth. See the task report for the full
+# before/after count.
 #
 # Some of these sentences open with a verb `_ACTION_STEMS` does not
 # recognise ("Do", "Start", "Perform") -- on purpose, per
@@ -231,22 +239,22 @@ _ENV_FALSE_REFUSALS = [
     "Update the .env.example with the two new vars",
 ]
 
+_ENV_CROSS_CLAUSE_FALSE_REFUSALS = [
+    # An uncapped `.env`-to-value reach (tried, then reverted, to catch
+    # "Update the .env so the app talks to the live database" -- see
+    # `test_a_documented_accepted_false_pass` below) let an unrelated value
+    # word anywhere later in the same clause manufacture a match. These three
+    # are ordinary documentation/changelog work that got caught by that.
+    "Update the changelog and remind people that the .env has a database url",
+    "Update the docs so the reader knows the .env is not the live database",
+    "Add a paragraph to the onboarding page about how the .env supplies the database",
+]
+
 _CLAUSE_BRIDGE_FALSE_REFUSALS = [
     # A verb governs an unrelated noun three words later, across a
     # punctuation mark that must stop the bridge on its own.
     "Run the linter, the migration is already in",
     "Update the README; the .env is documented there",
-]
-
-_CONJUNCTION_FALSE_REFUSALS = [
-    # Same idea, but the clause boundary is "and" rather than punctuation --
-    # only excluded from the migration/credential budget, not `.env`'s (see
-    # `_FEW_WORDS_NO_CONJ`).
-    "Run the tests and the migration is already applied",
-    "Run the linter and the migrations are fine",
-]
-_CONJUNCTION_FALSE_REFUSALS_MATCHER_ONLY = [
-    "Perform the audit and confirm migrations are current",
 ]
 
 _STORY_BLOB_FALSE_REFUSALS = [
@@ -259,12 +267,10 @@ _STORY_BLOB_FALSE_REFUSALS = [
 ]
 
 _SCREENABLE_CORPUS = (
-    _MIGRATION_FALSE_REFUSALS + _ENV_FALSE_REFUSALS + _CLAUSE_BRIDGE_FALSE_REFUSALS
-    + _CONJUNCTION_FALSE_REFUSALS + _STORY_BLOB_FALSE_REFUSALS
+    _MIGRATION_FALSE_REFUSALS + _ENV_FALSE_REFUSALS + _ENV_CROSS_CLAUSE_FALSE_REFUSALS
+    + _CLAUSE_BRIDGE_FALSE_REFUSALS + _STORY_BLOB_FALSE_REFUSALS
 )
-_MATCHER_ONLY_CORPUS = (
-    _MIGRATION_FALSE_REFUSALS_MATCHER_ONLY + _CONJUNCTION_FALSE_REFUSALS_MATCHER_ONLY
-)
+_MATCHER_ONLY_CORPUS = _MIGRATION_FALSE_REFUSALS_MATCHER_ONLY
 
 
 @pytest.mark.parametrize("text", _SCREENABLE_CORPUS)
@@ -291,7 +297,10 @@ def test_the_false_refusal_corpus_refusal_rate():
     above) so a regression shows up as a count, which is what was asked for
     -- and so CI prints the rate even if every individual case also has its
     own assertion elsewhere. Covers both halves of the corpus, checked the
-    way each half is meant to be checked.
+    way each half is meant to be checked. Deliberately does NOT include
+    `_ACCEPTED_FALSE_REFUSALS` or `_ACCEPTED_FALSE_PASSES` below -- those are
+    documented costs, not bugs, and folding them in here would make this
+    assertion fail by design.
     """
     screenable_refused = [t for t in _SCREENABLE_CORPUS if not ns.screen(t).ok]
     matcher_hits = [t for t in _MATCHER_ONLY_CORPUS if ns._production_hit(t.lower())]
@@ -299,6 +308,60 @@ def test_the_false_refusal_corpus_refusal_rate():
     total = len(_SCREENABLE_CORPUS) + len(_MATCHER_ONLY_CORPUS)
     assert refused == [], (
         f"{len(refused)}/{total} descriptive sentences wrongly refused: {refused}")
+
+
+# --- accepted costs, not bugs ------------------------------------------------
+#
+# Two tradeoffs made on purpose, in the last round of fixes, in favor of the
+# worse-sounding but cheaper failure mode. Both are asserted here so they are
+# MONITORED -- a future change that flips either of these is worth noticing,
+# even though the current state is the intended one, not a regression to
+# chase back to zero.
+
+_ACCEPTED_FALSE_REFUSALS = [
+    # Excluding "and"/"then"/"so" from the migration/credential budget closed
+    # these, and was reverted because it also turned "Run the dump and the
+    # migrations tonight" into a false PASS (see the `_FEW_WORDS` comment and
+    # `test_the_gate_refuses_the_forward_looking_shape_with_words_between`).
+    # A false refusal costs one night; that false pass costs a database.
+    "Run the tests and the migration is already applied",
+    "Run the linter and the migrations are fine",
+]
+_ACCEPTED_FALSE_REFUSALS_MATCHER_ONLY = [
+    "Perform the audit and confirm migrations are current",
+]
+
+
+@pytest.mark.parametrize("text", _ACCEPTED_FALSE_REFUSALS)
+def test_documented_accepted_false_refusals_from_the_conjunction_revert(text):
+    verdict = ns.screen(text)
+    assert not verdict.ok, (
+        f"{text!r} was expected to still be a documented false refusal -- if this "
+        "now passes, `_FEW_WORDS` likely regained a conjunction exclusion; check "
+        "it did not also reopen the false passes it was reverted for")
+
+
+@pytest.mark.parametrize("text", _ACCEPTED_FALSE_REFUSALS_MATCHER_ONLY)
+def test_documented_accepted_false_refusals_matcher_only(text):
+    assert ns._production_hit(text.lower()) is not None, text
+
+
+def test_a_documented_accepted_false_pass():
+    """`.env`'s reach is capped at the same width as migration/credential, and
+    "so the app talks to the" is 6 words -- past the cap. An uncapped version
+    caught this one and, measured in isolation, was the sole cause of the
+    `_ENV_CROSS_CLAUSE_FALSE_REFUSALS` regression above; the right-hand guard
+    added alongside the revert (`_ENV_TOKEN`) closes the adjacent "the .env
+    PARSER/HANDLING/..." shape but does not reach this far. Left passing on
+    purpose: a bounded pattern with one named gap is a better trade than an
+    unbounded one that refuses ordinary documentation and changelog work.
+    """
+    verdict = ns.screen("Update the .env so the app talks to the live database")
+    assert verdict.ok, (
+        "expected this to still be a documented false pass -- if it is now "
+        "refused, check what changed and whether it reopened the cross-clause "
+        "false refusals this was traded against"
+    )
 
 
 @pytest.mark.parametrize("text", [
