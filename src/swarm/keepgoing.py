@@ -58,6 +58,25 @@ from . import nightshift, paths
 # exists because a hook that never declines has no other exit.
 RUNAWAY_LIMIT = 25
 
+# How many times the SAME check failure may repeat before the session is handed
+# back. This is the backstop `RUNAWAY_LIMIT` is bad at: a mistyped `--until`
+# command can never pass, and waiting 25 turns to notice wastes an evening. A
+# check whose output is changing is work in progress; one whose output is
+# byte-identical five times running is a loop.
+#
+# Deliberately compared on the output rather than on the exit code alone: a
+# test suite going 7 failures -> 3 -> 1 is progressing, and all three of those
+# are exit 1.
+SAME_FAILURE_LIMIT = 5
+
+# How long `--until` may take. Long enough for a real test suite, short enough
+# that a command which hangs does not hang the operator's Stop hook with it.
+CHECK_TIMEOUT_SECONDS = 120
+
+# How much of a failing check's output is fed back. The tail, not the head:
+# the assertion is at the bottom of a pytest run, not the top.
+CHECK_OUTPUT_WINDOW = 2000
+
 # How much of the message after the first "still outstanding" marker counts as
 # a description of the remaining work. Long enough to cover a paragraph, short
 # enough that an unrelated closing note does not veto the whole turn.
@@ -174,6 +193,125 @@ def decide(final_message: str, *, continues_so_far: int = 0) -> Decision:
 
 
 # ---------------------------------------------------------------------------
+# Goals, and the check that answers them
+# ---------------------------------------------------------------------------
+#
+# Why the completion test is a COMMAND and not a model call.
+#
+# This hook runs inside the operator's session while they wait for it. The
+# module docstring already refuses a model call here for that reason -- 30-90
+# seconds on every single turn. That constraint turns out to be a gift rather
+# than a limitation: "has the goal been reached" answered by a shell exit code
+# is instant, deterministic, and arguable, and it hands the next turn the
+# actual failure output instead of a paraphrase of it.
+#
+# What it cannot do is judge a goal that has no test. `--until` is therefore
+# optional, and without it a goal only sharpens the instruction -- the stop
+# decision falls back to reading the session's own prose, exactly as before.
+# A goal you cannot test is a goal this cannot tell you has been reached, and
+# saying so is better than implying otherwise.
+
+GOAL_INSTRUCTION = (
+    "Keep working toward this goal. Do not stop to ask whether to continue; "
+    "if something is genuinely ambiguous, take the smallest defensible option "
+    "and say what you assumed. Stop and hand back only if the next step would "
+    "deploy, release, migrate, push, or touch credentials.\n\nGOAL: {goal}\n"
+)
+
+CHECK_FAILED_SUFFIX = (
+    "\nThe completion check `{until}` still fails. Its output ends:\n\n"
+    "```\n{output}\n```\n"
+)
+
+# A check can fail silently -- `test -f done.txt` prints nothing. An empty
+# fenced block reads as though the output were lost, so say what happened.
+CHECK_FAILED_QUIET = (
+    "\nThe completion check `{until}` still fails, and printed nothing.\n"
+)
+
+
+@dataclass
+class GoalCheck:
+    """The result of running a goal's `--until` command."""
+    ran: bool
+    met: bool
+    output: str = ""
+    error: str = ""
+    until: str = ""
+
+    @property
+    def digest(self) -> str:
+        """What "the same failure again" means. Whitespace-normalised so a
+        timing line that differs by milliseconds does not read as progress."""
+        return " ".join(self.output.split())
+
+
+def run_check(until: str, cwd: Path, *,
+              timeout: int = CHECK_TIMEOUT_SECONDS) -> GoalCheck:
+    """Run the completion check. Never raises.
+
+    A check that cannot run is NOT a failed check -- it is an unanswerable
+    question, and `decide_goal` hands the session back rather than looping on
+    it. Blocking a stop forever on a mistyped command would be the worst
+    behaviour available here: the operator sits watching a session that cannot
+    finish and cannot say why.
+    """
+    import subprocess  # noqa: PLC0415 - keep hook startup cheap
+
+    try:
+        done = subprocess.run(until, shell=True, cwd=str(cwd), text=True,
+                              capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return GoalCheck(ran=False, met=False, until=until,
+                         error=f"the check did not finish within {timeout}s")
+    except OSError as exc:
+        return GoalCheck(ran=False, met=False, until=until,
+                         error=f"the check could not run: {exc}")
+
+    combined = ((done.stdout or "") + (done.stderr or "")).strip()
+    return GoalCheck(ran=True, met=done.returncode == 0, until=until,
+                     output=combined[-CHECK_OUTPUT_WINDOW:])
+
+
+def decide_goal(goal: str, check: GoalCheck | None, *,
+                continues_so_far: int = 0,
+                same_failure_streak: int = 0) -> Decision:
+    """Should a session working toward `goal` be allowed to stop?
+
+    Pure, like `decide`. `check` is None when the goal has no `--until`; the
+    caller then falls back to `decide` and uses only this function's
+    instruction.
+    """
+    if RUNAWAY_LIMIT and continues_so_far >= RUNAWAY_LIMIT:
+        return Decision(False, f"{continues_so_far} consecutive continues -- handing back")
+
+    if check is None:
+        return Decision(True, "goal set, no completion check",
+                        instruction=GOAL_INSTRUCTION.format(goal=goal))
+
+    if not check.ran:
+        return Decision(False, f"the completion check could not answer: {check.error}")
+
+    if check.met:
+        return Decision(False, "the goal's completion check passed")
+
+    if SAME_FAILURE_LIMIT and same_failure_streak >= SAME_FAILURE_LIMIT:
+        return Decision(
+            False,
+            f"the completion check failed identically {same_failure_streak} "
+            "times -- nothing is changing")
+
+    # The failing output goes back with the instruction. This is the whole
+    # advantage of a command over a model call: the next turn starts from the
+    # actual assertion rather than from a summary of it.
+    tail = (CHECK_FAILED_SUFFIX.format(until=check.until, output=check.output)
+            if check.output.strip()
+            else CHECK_FAILED_QUIET.format(until=check.until))
+    return Decision(True, "the goal's completion check still fails",
+                    instruction=GOAL_INSTRUCTION.format(goal=goal) + tail)
+
+
+# ---------------------------------------------------------------------------
 # Which repositories are armed
 # ---------------------------------------------------------------------------
 
@@ -194,9 +332,21 @@ def _write_state(state: dict) -> None:
     path.write_text(json.dumps(state, indent=1), encoding="utf-8")
 
 
-def arm(repo: Path) -> None:
+def arm(repo: Path, *, goal: str = "", until: str = "") -> None:
+    """Arm a repository, optionally toward a goal.
+
+    With no goal this is what it always was: the session is kept going while
+    its own final message names outstanding work.
+
+    With a goal, the question changes from "did it say it was finished?" to
+    "is it finished?" -- and `until` is what answers that. See `run_check`.
+    """
     state = _read_state()
-    state.setdefault("repos", {})[str(repo)] = {"armed_at": time.time()}
+    state.setdefault("repos", {})[str(repo)] = {
+        "armed_at": time.time(),
+        "goal": (goal or "").strip(),
+        "until": (until or "").strip(),
+    }
     _write_state(state)
 
 
@@ -217,11 +367,35 @@ def is_armed(cwd: Path) -> bool:
     repository's session; matching the exact path only would silently do
     nothing for anyone working one level down.
     """
+    return _armed_repo_for(cwd) is not None
+
+
+def _armed_repo_for(cwd: Path) -> str | None:
+    """The armed repo governing `cwd`: the longest match, not the first.
+
+    Longest wins so that arming a subdirectory toward its own goal is not
+    silently overridden by an older, broader arming of its parent.
+    """
     resolved = str(cwd)
-    for repo in armed_repos():
-        if resolved == repo or resolved.startswith(repo.rstrip("/") + "/"):
-            return True
-    return False
+    matches = [repo for repo in armed_repos()
+               if resolved == repo or resolved.startswith(repo.rstrip("/") + "/")]
+    return max(matches, key=len) if matches else None
+
+
+def goal_for(cwd: Path) -> dict | None:
+    """The goal record governing `cwd`, or None if it is armed without one.
+
+    Returns `{"goal": str, "until": str}`. A repo armed before goals existed
+    has neither key, and reads as no goal -- the old behaviour, unchanged.
+    """
+    repo = _armed_repo_for(cwd)
+    if repo is None:
+        return None
+    record = _read_state().get("repos", {}).get(repo, {})
+    goal = (record.get("goal") or "").strip()
+    if not goal:
+        return None
+    return {"goal": goal, "until": (record.get("until") or "").strip()}
 
 
 # ---------------------------------------------------------------------------
@@ -290,8 +464,33 @@ def reset_continues(session_id: str) -> None:
     would eventually hand back a perfectly healthy session for no reason.
     """
     state = _read_state()
-    if state.get("sessions", {}).pop(session_id, None) is not None:
+    changed = state.get("sessions", {}).pop(session_id, None) is not None
+    changed |= state.get("checks", {}).pop(session_id, None) is not None
+    if changed:
         _write_state(state)
+
+
+# ---------------------------------------------------------------------------
+# How many times the same check failure has repeated, per session
+# ---------------------------------------------------------------------------
+
+def failure_streak(session_id: str) -> int:
+    return int(_read_state().get("checks", {}).get(session_id, {}).get("streak", 0))
+
+
+def note_failure(session_id: str, digest: str) -> int:
+    """Record a failing check and return how many times it has now repeated.
+
+    A digest that differs from last time resets the streak to 1: the check is
+    saying something new, which is what progress looks like from out here.
+    """
+    state = _read_state()
+    checks = state.setdefault("checks", {})
+    previous = checks.get(session_id) or {}
+    streak = int(previous.get("streak", 0)) + 1 if previous.get("digest") == digest else 1
+    checks[session_id] = {"digest": digest, "streak": streak}
+    _write_state(state)
+    return streak
 
 
 def effectiveness() -> dict:

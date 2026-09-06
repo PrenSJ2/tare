@@ -213,11 +213,43 @@ def _cmd_keepgoing(args) -> int:
     repo = paths.working_tree(args.repo)
 
     if args.action == "on":
-        kg.arm(repo)
+        goal = (getattr(args, "goal", "") or "").strip()
+        until = (getattr(args, "until", "") or "").strip()
+
+        if until and not goal:
+            print("--until needs a --goal: a check with nothing to reach is "
+                  "just a command.", file=sys.stderr)
+            return 2
+
+        # The goal is screened by the same gate that screens everything else
+        # this project dispatches. Arming toward "deploy the new pricing page"
+        # would otherwise build a loop whose own instruction tells it to stop.
+        if goal:
+            verdict = ns.screen(goal, require_action=False)
+            if not verdict.ok:
+                print(f"refusing to arm toward that goal: {verdict.reason}"
+                      + (f" ({verdict.matched!r})" if verdict.matched else ""),
+                      file=sys.stderr)
+                return 2
+
+        kg.arm(repo, goal=goal, until=until)
         print(f"armed: {repo}")
-        print("Sessions here will carry on by themselves instead of waiting for")
-        print("\"keep going\". They hand back when the work names nothing outstanding,")
-        print("asks you a question, or would touch production.")
+        if goal:
+            print(f"  goal:  {goal}")
+            if until:
+                print(f"  until: {until}")
+                print("\nSessions here carry on until that command exits 0. Each turn")
+                print("gets the goal and the check's failing output. They hand back when")
+                print("it passes, when it cannot run, or when it fails identically")
+                print(f"{kg.SAME_FAILURE_LIMIT} times running.")
+            else:
+                print("\nNo --until, so nothing here can tell you the goal is reached.")
+                print("Sessions carry on while their own message names outstanding work,")
+                print("as before -- the goal only sharpens the instruction they get.")
+        else:
+            print("Sessions here will carry on by themselves instead of waiting for")
+            print("\"keep going\". They hand back when the work names nothing outstanding,")
+            print("asks you a question, or would touch production.")
         if not _keepgoing_hook_installed():
             print("\nThe Stop hook is NOT registered yet -- run: swarm install")
         return 0
@@ -370,6 +402,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_keep.add_argument("action", nargs="?", default="status",
                         choices=("on", "off", "status"))
     p_keep.add_argument("--repo", default=".")
+    p_keep.add_argument("--goal", default="",
+                        help="what sessions here are working toward; named in "
+                             "the instruction they get on every continuation")
+    p_keep.add_argument("--until", default="",
+                        help="shell command that decides the goal is reached. "
+                             "Exit 0 means done. Its failing output is fed back "
+                             "each turn. Without it nothing can tell you the "
+                             "goal is met")
     p_keep.set_defaults(fn=_cmd_keepgoing)
 
     p_shells = sub.add_parser("shells", help="what each session is running in a shell now")

@@ -57,8 +57,35 @@ def main() -> None:
             _record({"event": "keepgoing-outcome", "session": session_id,
                      "worked": worked, "bytes": grew})
 
-        decision = keepgoing.decide(
-            text, continues_so_far=keepgoing.continues_for(session_id))
+        continues = keepgoing.continues_for(session_id)
+        goal = keepgoing.goal_for(Path(cwd))
+
+        if goal is None:
+            decision = keepgoing.decide(text, continues_so_far=continues)
+        elif goal["until"]:
+            # A goal with a completion check does not read the session's prose
+            # at all. Whether it SAID it was finished is not the question.
+            check = keepgoing.run_check(goal["until"], Path(cwd))
+            streak = 0
+            if check.ran and not check.met:
+                streak = keepgoing.note_failure(session_id, check.digest)
+            decision = keepgoing.decide_goal(
+                goal["goal"], check, continues_so_far=continues,
+                same_failure_streak=streak)
+            _record({"event": "keepgoing-check", "session": session_id,
+                     "until": goal["until"], "ran": check.ran, "met": check.met,
+                     "streak": streak, "reason": decision.reason})
+        else:
+            # A goal with no check: the stop decision is still the prose one,
+            # because nothing here can tell whether the goal is met. Only the
+            # instruction improves -- it names the goal instead of saying
+            # "carry on with what you just described".
+            prose = keepgoing.decide(text, continues_so_far=continues)
+            goal_only = keepgoing.decide_goal(goal["goal"], None,
+                                              continues_so_far=continues)
+            decision = keepgoing.Decision(
+                prose.keep_going, prose.reason,
+                instruction=goal_only.instruction if prose.keep_going else "")
 
         if not decision.keep_going:
             keepgoing.reset_continues(session_id)
