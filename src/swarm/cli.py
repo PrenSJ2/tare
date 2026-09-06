@@ -82,6 +82,10 @@ def _cmd_install(args) -> int:
         print("  SessionStart, SubagentStart (goal -- inactive until a goal is set)")
     else:
         print("  swarm-goal not on PATH; sessions will not be told the goal")
+
+    skill = install.install_goal_skill()
+    print(f"\nwrote the /goal skill to {skill}")
+    print("  set a goal from inside a session: /goal make the tests pass")
     print("\nHooks are live-reloaded; no restart needed.")
     return 0
 
@@ -90,6 +94,7 @@ def _cmd_uninstall(args) -> int:
     touched = install.uninstall()
     install.uninstall_keepgoing()
     install.uninstall_goal()
+    install.uninstall_goal_skill()
     print(f"removed swarm hooks from {len(touched)} event(s) in {paths.settings_path()}")
     return 0
 

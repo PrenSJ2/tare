@@ -60,6 +60,15 @@ def working_tree(value: str) -> Path:
     return Path(value).expanduser().resolve()
 
 
+def goal_skill_path() -> Path:
+    """Where the `/goal` skill is written.
+
+    Under `skills/`, so it is a slash command the operator can type rather
+    than a CLI invocation they have to leave the session for.
+    """
+    return claude_home() / "skills" / "goal" / "SKILL.md"
+
+
 def projects_dir() -> Path:
     """Where Claude Code keeps session transcripts.
 

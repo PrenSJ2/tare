@@ -117,6 +117,91 @@ def uninstall_keepgoing() -> None:
     _save(data)
 
 
+# 24 words. Always loaded, so length is load-bearing.
+_GOAL_SKILL_DESCRIPTION = (
+    "Use when the user wants to set, show or clear a goal this session keeps "
+    "working toward until a check passes. Triggers on /goal."
+)
+
+_GOAL_SKILL_BODY = f"""---
+name: goal
+description: {_GOAL_SKILL_DESCRIPTION}
+---
+
+# goal
+
+Set what this session is working toward, and how anyone can tell it is done.
+Once set, the session is kept going until the check passes -- it will not stop
+and wait to be told to continue.
+
+## Setting one
+
+```
+swarm keepgoing on --repo <the project root> --goal "<the goal>" --until "<check>"
+```
+
+`--until` is a shell command run in the project root. **Exit 0 means the goal
+is reached.** Pick something that already exists and is cheap to run:
+
+| the goal | a check that answers it |
+|---|---|
+| make the integration tests pass | `pytest -q tests/integration` |
+| get the build clean | `npm run build` |
+| no type errors left | `mypy src` |
+| the flaky test stops failing | `pytest -q tests/test_retry.py --count 5` |
+
+Prefer the narrowest check that is true only when the goal is met. A whole
+suite is fine; `true` is not -- it would end the loop immediately.
+
+**Push for an `--until` before settling for none.** Without one, nothing can
+tell the user their goal is reached, and the session falls back to guessing
+from its own prose. If the goal genuinely has no command that decides it, say
+so plainly rather than inventing a check that does not test it.
+
+## Showing and clearing
+
+```
+swarm keepgoing status      # what is armed, and toward what
+swarm keepgoing off --repo <the project root>
+```
+
+## What to tell the user
+
+After arming, report the goal and the check back, and say what will end the
+loop: the check passing, the check failing identically 5 times, 25
+continuations, or a check that cannot run at all.
+
+If `swarm install` has not been run, arming prints that the Stop hook is not
+registered -- the goal will do nothing until it is. Offer to run it.
+
+## When it refuses
+
+A goal that names production work is refused at arming time, e.g. "deploy the
+new pricing page". That is deliberate: an unattended loop pointed at a deploy
+is exactly what the gate exists to prevent. Reword toward the buildable part
+of the work, or leave the deploy to the user.
+"""
+
+
+def install_goal_skill() -> Path:
+    """Write the `/goal` skill so a goal can be set without leaving the session."""
+    path = paths.goal_skill_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_GOAL_SKILL_BODY, encoding="utf-8")
+    return path
+
+
+def uninstall_goal_skill() -> None:
+    path = paths.goal_skill_path()
+    try:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()
+    except OSError:
+        # A non-empty directory means something else lives there too; leaving
+        # it is strictly better than removing somebody else's file.
+        pass
+
+
 def _is_keepgoing(entry: dict) -> bool:
     for hook in entry.get("hooks", []) if isinstance(entry, dict) else []:
         if _KEEPGOING_MARKER in str(hook.get("command", "")):

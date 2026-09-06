@@ -147,3 +147,57 @@ def test_registered_command_is_none_when_nothing_installed(swarm_home):
 def test_registered_command_degrades_on_malformed_settings(swarm_home):
     (swarm_home / "settings.json").write_text("{ not json")
     assert install.registered_command() is None
+
+
+# --- the /goal skill --------------------------------------------------------
+
+def test_the_goal_skill_is_written_where_claude_code_looks(swarm_home):
+    from swarm import install as ins
+    from swarm import paths as p
+
+    path = ins.install_goal_skill()
+    assert path == p.goal_skill_path()
+    assert path.parent.name == "goal" and path.name == "SKILL.md"
+
+    body = path.read_text()
+    assert body.startswith("---\nname: goal\n")
+    # Every command it names must be a real subcommand, or the skill teaches
+    # an invocation that fails in front of the user.
+    for command in ("keepgoing on", "keepgoing off", "keepgoing status"):
+        assert command in body
+
+
+def test_the_goal_skill_description_stays_short(swarm_home):
+    """Always loaded, so length is a cost paid on every turn. This project's
+    own audit flags a description over 30 words as bloat."""
+    from swarm import install as ins
+
+    assert len(ins._GOAL_SKILL_DESCRIPTION.split()) <= 30
+
+
+def test_installing_the_skill_twice_replaces_rather_than_duplicates(swarm_home):
+    from swarm import install as ins
+
+    first = ins.install_goal_skill().read_text()
+    assert ins.install_goal_skill().read_text() == first
+
+
+def test_uninstalling_removes_the_skill(swarm_home):
+    from swarm import install as ins
+
+    path = ins.install_goal_skill()
+    ins.uninstall_goal_skill()
+    assert not path.exists()
+
+
+def test_uninstalling_leaves_a_stranger_s_file_alone(swarm_home):
+    """If something else lives in that directory, removing it is worse than
+    leaving an empty skill behind."""
+    from swarm import install as ins
+
+    path = ins.install_goal_skill()
+    neighbour = path.parent / "notes.md"
+    neighbour.write_text("someone else's")
+    ins.uninstall_goal_skill()
+    assert not path.exists()
+    assert neighbour.read_text() == "someone else's"
