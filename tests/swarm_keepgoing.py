@@ -7,6 +7,7 @@ should have asked, or asks when it should have carried on.
 """
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -427,3 +428,73 @@ def test_a_silent_failing_check_says_so_rather_than_showing_an_empty_block(tmp_p
     instruction = kg.decide_goal("g", check).instruction
     assert "printed nothing" in instruction
     assert "```" not in instruction
+
+
+# --- telling the session, and its subagents, what the goal is ---------------
+#
+# The stop decision was invisible from inside the session: the model found out
+# it had a goal only when it tried to stop and was told to carry on. A subagent
+# never found out at all -- SessionStart does not fire for one.
+
+def _run_goal_hook(event, cwd, home):
+    """Drive the real entrypoint the way Claude Code does: argv + stdin JSON."""
+    return subprocess.run(
+        [sys.executable, "-c", "from swarm import goal_hook; goal_hook.main()", event],
+        input=json.dumps({"cwd": str(cwd)}), text=True, capture_output=True,
+        env={**os.environ, "SWARM_HOME": str(home), "TARE_HOME": str(home),
+             "PYTHONPATH": str(Path(__file__).resolve().parent.parent / "src")},
+    )
+
+
+def test_a_session_is_told_the_goal_at_startup(swarm_home, tmp_path):
+    kg.arm(tmp_path, goal="make the parser handle quoted values",
+           until="pytest -q tests/parser")
+    done = _run_goal_hook("SessionStart", tmp_path, swarm_home)
+
+    assert done.returncode == 0
+    payload = json.loads(done.stdout)["hookSpecificOutput"]
+    assert payload["hookEventName"] == "SessionStart"
+    assert "make the parser handle quoted values" in payload["additionalContext"]
+    assert "pytest -q tests/parser" in payload["additionalContext"]
+
+
+def test_a_subagent_is_told_the_same_goal(swarm_home, tmp_path):
+    """The reason this hook exists: SessionStart never fires for a subagent,
+    so without SubagentStart a spawned agent works toward nothing it knows."""
+    kg.arm(tmp_path, goal="port the retry logic", until="true")
+    done = _run_goal_hook("SubagentStart", tmp_path, swarm_home)
+
+    payload = json.loads(done.stdout)["hookSpecificOutput"]
+    assert payload["hookEventName"] == "SubagentStart"
+    assert "port the retry logic" in payload["additionalContext"]
+
+
+def test_an_unarmed_repo_is_left_completely_alone(swarm_home, tmp_path):
+    done = _run_goal_hook("SessionStart", tmp_path, swarm_home)
+    assert (done.returncode, done.stdout.strip(), done.stderr.strip()) == (0, "", "")
+
+
+def test_armed_without_a_goal_says_nothing(swarm_home, tmp_path):
+    """Arming for plain continuation must not start narrating at every session."""
+    kg.arm(tmp_path)
+    done = _run_goal_hook("SessionStart", tmp_path, swarm_home)
+    assert done.stdout.strip() == ""
+
+
+def test_a_goal_with_no_check_says_so_rather_than_implying_completion(swarm_home, tmp_path):
+    kg.arm(tmp_path, goal="tidy the config module")
+    payload = json.loads(_run_goal_hook("SessionStart", tmp_path, swarm_home).stdout)
+    context = payload["hookSpecificOutput"]["additionalContext"]
+    assert "no completion check" in context
+    assert "nothing can confirm" in context
+
+
+def test_a_broken_payload_is_silent_not_loud(swarm_home, tmp_path):
+    """Whatever happens, this must not put swarm's failure into the session."""
+    done = subprocess.run(
+        [sys.executable, "-c", "from swarm import goal_hook; goal_hook.main()", "SessionStart"],
+        input="not json at all", text=True, capture_output=True,
+        env={**os.environ, "SWARM_HOME": str(swarm_home),
+             "PYTHONPATH": str(Path(__file__).resolve().parent.parent / "src")},
+    )
+    assert (done.returncode, done.stdout.strip(), done.stderr.strip()) == (0, "", "")

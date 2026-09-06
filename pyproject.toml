@@ -13,6 +13,7 @@ tare = "tare.cli:run"
 swarm = "swarm.cli:main"
 swarm-hook = "swarm.hook:main"
 swarm-keepgoing = "swarm.keepgoing_hook:main"
+swarm-goal = "swarm.goal_hook:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -28,6 +28,15 @@ _KEEPGOING_EVENT = "Stop"
 # why the decision is made from text already in hand.
 _KEEPGOING_TIMEOUT = 10
 
+# The goal hook is separate again, and for the same reason: it SPEAKS. It
+# writes `additionalContext` so a session -- and every subagent, which never
+# sees a SessionStart -- is told what it is working toward instead of only
+# finding out when it tries to stop.
+_GOAL_MARKER = "swarm-goal"
+_GOAL_EVENTS = ("SessionStart", "SubagentStart")
+# Reads one small JSON file. Nothing here justifies more.
+_GOAL_TIMEOUT = 5
+
 
 def _load() -> dict:
     path = paths.settings_path()
@@ -113,6 +122,51 @@ def _is_keepgoing(entry: dict) -> bool:
         if _KEEPGOING_MARKER in str(hook.get("command", "")):
             return True
     return False
+
+
+def _is_goal(entry: dict) -> bool:
+    for hook in entry.get("hooks", []) if isinstance(entry, dict) else []:
+        command = str(hook.get("command", ""))
+        # `swarm-keepgoing` contains `swarm-goal`? No -- but check anyway that
+        # this never matches the keepgoing marker, because the two share a
+        # settings file and a mistaken match would uninstall the wrong hook.
+        if _GOAL_MARKER in command and _KEEPGOING_MARKER not in command:
+            return True
+    return False
+
+
+def install_goal(hook_command: str) -> None:
+    """Register the hook that tells sessions and subagents what the goal is."""
+    if Path(hook_command).name != _GOAL_MARKER:
+        raise ValueError(
+            f"hook command must be named {_GOAL_MARKER!r}, "
+            f"got {Path(hook_command).name!r}"
+        )
+    data = _load()
+    hooks = data.setdefault("hooks", {})
+    for event in _GOAL_EVENTS:
+        entries = hooks.setdefault(event, [])
+        entries[:] = [e for e in entries if not _is_goal(e)]
+        # The event name is passed as an argument so the hook can echo it back
+        # in `hookEventName`, which Claude Code requires to match.
+        entries.append({"hooks": [{
+            "type": "command",
+            "command": f'"{hook_command}" {event}',
+            "timeout": _GOAL_TIMEOUT,
+        }]})
+    _save(data)
+
+
+def uninstall_goal() -> None:
+    data = _load()
+    for event in _GOAL_EVENTS:
+        entries = data.get("hooks", {}).get(event)
+        if not entries:
+            continue
+        entries[:] = [e for e in entries if not _is_goal(e)]
+        if not entries:
+            data["hooks"].pop(event, None)
+    _save(data)
 
 
 def install(hook_command: str) -> list[str]:
