@@ -72,6 +72,16 @@ def _cmd_install(args) -> int:
         print("  Stop (keepgoing -- inactive until `swarm keepgoing on`)")
     else:
         print("  swarm-keepgoing not on PATH; automatic continuation unavailable")
+
+    # Same shape: registered now, silent until a repo is armed WITH A GOAL.
+    # Without one it emits nothing, so an armed-but-goalless repo's sessions
+    # are unchanged.
+    goal_cmd = shutil.which("swarm-goal")
+    if goal_cmd:
+        install.install_goal(goal_cmd)
+        print("  SessionStart, SubagentStart (goal -- inactive until a goal is set)")
+    else:
+        print("  swarm-goal not on PATH; sessions will not be told the goal")
     print("\nHooks are live-reloaded; no restart needed.")
     return 0
 
@@ -79,6 +89,7 @@ def _cmd_install(args) -> int:
 def _cmd_uninstall(args) -> int:
     touched = install.uninstall()
     install.uninstall_keepgoing()
+    install.uninstall_goal()
     print(f"removed swarm hooks from {len(touched)} event(s) in {paths.settings_path()}")
     return 0
 
@@ -262,7 +273,11 @@ def _cmd_keepgoing(args) -> int:
     armed = kg.armed_repos()
     print("armed repositories:" if armed else "no repositories are armed")
     for path in armed:
+        record = kg.goal_for(Path(path))
         print(f"  {path}")
+        if record:
+            print(f"      goal:  {record['goal']}")
+            print(f"      until: {record['until'] or '(none -- nothing can confirm it is reached)'}")
     print(f"\nStop hook registered: {_keepgoing_hook_installed()}")
 
     recent = [e for e in ns.read_ledger() if e.get("event") == "keepgoing"][-12:]

@@ -131,6 +131,32 @@ while the session's own message names outstanding work — and the goal only
 sharpens the instruction. Nothing can tell you an untestable goal has been
 reached, and it says so instead of implying otherwise.
 
+**The session is told the goal, and so is every subagent.** Otherwise the model
+discovers it has a goal only when it tries to stop and is told to carry on —
+working toward something nobody mentioned. `SessionStart` and `SubagentStart`
+both accept injected context, so `swarm install` registers a hook on each and
+the goal is stated up front:
+
+```
+Goal for this repository, set with `swarm keepgoing on --goal`:
+
+  make the integration tests pass on postgres 16
+
+It is considered reached when this command exits 0:
+
+  pytest -q tests/integration
+```
+
+`SubagentStart` matters more than it looks: a `SessionStart` hook never fires
+for a spawned subagent, so without it a subagent works toward a goal it has no
+way of knowing about. `swarm keepgoing status` shows the same thing from
+outside.
+
+The hook is silent unless a repository is armed **with a goal** — no goal, no
+output, nothing changed. And it is a separate entry point from the recording
+hooks on purpose: those are contractually forbidden to write anything, so a
+hook that speaks has no business sharing their process.
+
 ### Working a plan instead of a chat message
 
 `nightshift` normally takes its next step from the last message of the session
