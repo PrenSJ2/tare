@@ -97,13 +97,19 @@ to yield, and a hook that exits 2 blocks it and feeds stderr back as the
 instruction. Nothing is spawned, nothing is sandboxed — it steers the session
 you are already in.
 
-Give it a goal and a way to know the goal is met:
+Give it a goal and a way to know the goal is met. From inside a session:
+
+```
+/goal make the integration tests pass on postgres 16
+```
+
+or from a shell:
 
 ```bash
 swarm keepgoing on \
   --goal  "make the integration tests pass on postgres 16" \
   --until "pytest -q tests/integration"
-swarm install          # once, to register the hook
+swarm install          # once, to register the hooks and write /goal
 ```
 
 Then work normally. Every time the session tries to stop, the hook runs
