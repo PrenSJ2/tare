@@ -90,6 +90,47 @@ swarm watch                # live view of this session's agents
 swarm nightshift recap     # what ran overnight
 ```
 
+### A goal, and a session that runs until it is reached
+
+`keepgoing` is a `Stop` hook: Claude Code fires `Stop` when a session is about
+to yield, and a hook that exits 2 blocks it and feeds stderr back as the
+instruction. Nothing is spawned, nothing is sandboxed — it steers the session
+you are already in.
+
+Give it a goal and a way to know the goal is met:
+
+```bash
+swarm keepgoing on \
+  --goal  "make the integration tests pass on postgres 16" \
+  --until "pytest -q tests/integration"
+swarm install          # once, to register the hook
+```
+
+Then work normally. Every time the session tries to stop, the hook runs
+`--until`. **Exit 0 and it stops.** Otherwise it carries on, and the next turn
+starts with the goal and the check's failing output.
+
+**Why the completion test is a command and not a model call.** This hook runs
+while you sit there waiting for it, so `nightshift`'s reasoning applies twice
+over: asking a model "are we done yet?" is a 30-90 second pause on every single
+turn. A shell exit code is instant, deterministic, arguable, and it hands the
+next turn the actual assertion rather than a paraphrase of it.
+
+Two backstops, because a loop with no exit is not a feature. It hands back
+after 25 consecutive continuations, and sooner — after 5 — if the check fails
+*identically* every time. The comparison is on the output, not the exit code:
+a suite going 7 failures → 3 → 1 is progress, and all three are exit 1.
+
+A check that cannot run at all — a typo, a hang — hands back immediately rather
+than looping. And the goal itself goes through the same production gate as
+everything else here, so `--goal "deploy to production"` is refused at arming
+time rather than becoming a loop whose own instruction tells it to stop.
+
+`--until` is optional. Without it you get the original behaviour — carry on
+while the session's own message names outstanding work — and the goal only
+sharpens the instruction. Nothing can tell you an untestable goal has been
+reached, and it says so instead of implying otherwise.
+
 ### Working a plan instead of a chat message
 
 `nightshift` normally takes its next step from the last message of the session

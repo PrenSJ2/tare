@@ -292,3 +292,138 @@ def test_the_hook_records_every_decision(swarm_home, tmp_path):
     # A hook that silently changes when a session stops cannot be debugged.
     assert entries and entries[-1]["kept_going"] is True
     assert entries[-1]["reason"]
+
+
+# --- goals, and the check that answers them --------------------------------
+#
+# The point of a goal is that "did it say it was finished?" is replaced by
+# "is it finished?". Every test here is really about that substitution: the
+# session's own prose stops being the evidence.
+
+def test_a_goal_with_no_check_is_no_goal_at_all(swarm_home, tmp_path):
+    """Arming without `--until` must not pretend it can tell you anything.
+
+    `goal_for` still reports the goal so the instruction can name it, but
+    `decide_goal` is explicit that it has no completion evidence.
+    """
+    kg.arm(tmp_path, goal="make the parser handle quoted values")
+    record = kg.goal_for(tmp_path)
+    assert record == {"goal": "make the parser handle quoted values", "until": ""}
+
+    decision = kg.decide_goal(record["goal"], None)
+    assert decision.keep_going is True
+    assert decision.reason == "goal set, no completion check"
+    assert "make the parser handle quoted values" in decision.instruction
+
+
+def test_a_repo_armed_without_a_goal_reads_as_no_goal(swarm_home, tmp_path):
+    """The old behaviour, and the shape of every pre-existing state file."""
+    kg.arm(tmp_path)
+    assert kg.is_armed(tmp_path) is True
+    assert kg.goal_for(tmp_path) is None
+
+
+def test_the_longest_armed_path_wins(swarm_home, tmp_path):
+    """Arming a subdirectory toward its own goal must not be shadowed by an
+    older, broader arming of its parent."""
+    child = tmp_path / "service"
+    child.mkdir()
+    kg.arm(tmp_path, goal="parent goal", until="true")
+    kg.arm(child, goal="child goal", until="true")
+    assert kg.goal_for(child)["goal"] == "child goal"
+    assert kg.goal_for(tmp_path)["goal"] == "parent goal"
+
+
+# --- run_check --------------------------------------------------------------
+
+def test_a_passing_check_is_the_goal_reached(tmp_path):
+    check = kg.run_check("exit 0", tmp_path)
+    assert (check.ran, check.met) == (True, True)
+    assert kg.decide_goal("g", check).keep_going is False
+    assert kg.decide_goal("g", check).reason == "the goal's completion check passed"
+
+
+def test_a_failing_check_feeds_its_own_output_back(tmp_path):
+    check = kg.run_check("echo 'E   assert 3 == 4' >&2; exit 1", tmp_path)
+    assert (check.ran, check.met) == (True, False)
+
+    decision = kg.decide_goal("make the tests pass", check)
+    assert decision.keep_going is True
+    assert "make the tests pass" in decision.instruction
+    # The actual assertion, not a paraphrase of it. This is the whole reason
+    # the check is a command rather than a model call.
+    assert "assert 3 == 4" in decision.instruction
+
+
+def test_a_check_that_cannot_run_hands_back_rather_than_looping(tmp_path):
+    """A mistyped command can never pass. Blocking on it forever would leave
+    the operator watching a session that cannot finish and cannot say why."""
+    check = kg.run_check("nosuchcommand-xyzzy", tmp_path)
+    assert check.ran is True and check.met is False   # the shell reports 127
+
+    unrunnable = kg.GoalCheck(ran=False, met=False, error="the check could not run: boom")
+    decision = kg.decide_goal("g", unrunnable)
+    assert decision.keep_going is False
+    assert "could not answer" in decision.reason
+
+
+def test_a_check_that_hangs_is_bounded(tmp_path):
+    check = kg.run_check("sleep 5", tmp_path, timeout=1)
+    assert (check.ran, check.met) == (False, False)
+    assert "did not finish" in check.error
+    assert kg.decide_goal("g", check).keep_going is False
+
+
+def test_the_check_runs_in_the_repo(tmp_path):
+    (tmp_path / "marker").write_text("x")
+    assert kg.run_check("test -f marker", tmp_path).met is True
+
+
+# --- the two backstops ------------------------------------------------------
+
+def test_an_identical_failure_repeated_hands_back(tmp_path):
+    failing = kg.run_check("echo same; exit 1", tmp_path)
+    below = kg.decide_goal("g", failing, same_failure_streak=kg.SAME_FAILURE_LIMIT - 1)
+    assert below.keep_going is True
+
+    at_limit = kg.decide_goal("g", failing, same_failure_streak=kg.SAME_FAILURE_LIMIT)
+    assert at_limit.keep_going is False
+    assert "identically" in at_limit.reason
+
+
+def test_a_changing_failure_resets_the_streak(swarm_home):
+    """7 failures -> 3 -> 1 is progress, and all three are exit 1. Comparing
+    exit codes alone would hand back a session that is getting somewhere."""
+    assert kg.note_failure("s1", "7 failed") == 1
+    assert kg.note_failure("s1", "7 failed") == 2
+    assert kg.note_failure("s1", "3 failed") == 1     # output changed
+    assert kg.failure_streak("s1") == 1
+
+
+def test_whitespace_alone_does_not_count_as_progress():
+    a = kg.GoalCheck(ran=True, met=False, output="1 failed  in 0.31s")
+    b = kg.GoalCheck(ran=True, met=False, output="1 failed   in 0.31s\n")
+    assert a.digest == b.digest
+
+
+def test_the_runaway_limit_still_applies_to_goals(tmp_path):
+    failing = kg.run_check("exit 1", tmp_path)
+    decision = kg.decide_goal("g", failing, continues_so_far=kg.RUNAWAY_LIMIT)
+    assert decision.keep_going is False
+    assert "consecutive continues" in decision.reason
+
+
+def test_letting_a_session_stop_clears_its_failure_streak(swarm_home):
+    kg.note_failure("s2", "same")
+    kg.note_failure("s2", "same")
+    kg.reset_continues("s2")
+    assert kg.failure_streak("s2") == 0
+
+
+def test_a_silent_failing_check_says_so_rather_than_showing_an_empty_block(tmp_path):
+    """`test -f done.txt` prints nothing. An empty fenced block reads as
+    though the output had been lost."""
+    check = kg.run_check("test -f nope.txt", tmp_path)
+    instruction = kg.decide_goal("g", check).instruction
+    assert "printed nothing" in instruction
+    assert "```" not in instruction
