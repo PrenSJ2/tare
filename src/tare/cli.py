@@ -240,6 +240,69 @@ def _cmd_install(conn, args) -> int:
     return 0
 
 
+def _cmd_setup(conn, args) -> int:
+    """Install both halves, and say what is now live.
+
+    `tare install` and `swarm install` each register a different, correct set
+    of hooks -- and knowing that both exist, and in which order, was something
+    a new operator could only learn by reading far enough down the README. One
+    command that does the whole job removes a step that was never a decision.
+
+    Idempotent, like the two it calls: re-running replaces this project's own
+    entries rather than accumulating duplicates, and leaves every other tool's
+    hooks alone.
+    """
+    import shutil
+
+    install_mod.install()
+    print(f"capability half: skill written to {paths.skill_install_path()}")
+    print("                 hook registered on SessionStart")
+
+    # The agent half lives in a sibling package with its own executables. It
+    # is optional in the sense that tare works without it -- so a missing
+    # `swarm` is reported, not fatal.
+    if shutil.which("swarm") is None:
+        print("\nagent half:      `swarm` is not on PATH -- skipped.")
+        print("                 Reinstall the package to get it:  uv tool install . --force")
+        return 0
+
+    from swarm import install as swarm_install
+
+    hook_cmd = shutil.which("swarm-hook")
+    if hook_cmd is None:
+        print("\nagent half:      `swarm-hook` is not on PATH -- skipped.")
+        return 0
+
+    touched = swarm_install.install(hook_cmd)
+    print(f"\nagent half:      {len(touched)} recording hook(s) -- {', '.join(touched)}")
+
+    keepgoing_cmd = shutil.which("swarm-keepgoing")
+    if keepgoing_cmd:
+        swarm_install.install_keepgoing(keepgoing_cmd)
+        print("                 Stop (keepgoing -- inactive until `swarm keepgoing on`)")
+    else:
+        print("                 swarm-keepgoing missing; automatic continuation unavailable")
+
+    goal_cmd = shutil.which("swarm-goal")
+    if goal_cmd:
+        swarm_install.install_goal(goal_cmd)
+        print("                 SessionStart, SubagentStart (goal -- inactive until a goal is set)")
+    else:
+        # The commonest cause is an install predating this executable, which
+        # is worth naming: nothing else about the setup looks wrong.
+        print("                 swarm-goal missing -- sessions will not be told the goal.")
+        print("                 Reinstall to add it:  uv tool install . --force")
+
+    skill = swarm_install.install_goal_skill()
+    print(f"                 /goal skill written to {skill}")
+
+    print(f"\nAll of it lives in {paths.settings_path()}.")
+    print("Hooks are live-reloaded; no restart needed.")
+    print("\nNext:  tare build     (scan, mine, tag, index -- the slow one)")
+    print("       tare audit     (what your always-loaded context costs today)")
+    return 0
+
+
 def _cmd_uninstall(conn, args) -> int:
     install_mod.uninstall()
     print("skill and hook removed; the vault is untouched")
@@ -581,6 +644,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("domain", nargs="?", help="list one domain in full")
 
     add("audit", "token cost, buckets, duplicates", _cmd_audit)
+    add("setup", "install both halves: the skill, the hooks, and /goal", _cmd_setup)
     add("install", "register the tare skill and SessionStart hook", _cmd_install)
     add("uninstall", "remove the skill and hook; keeps the vault", _cmd_uninstall)
     add("hookline", "one line for the SessionStart hook", _cmd_hookline)

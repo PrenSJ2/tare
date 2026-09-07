@@ -52,3 +52,24 @@ def test_non_scalar_name_is_treated_as_absent_not_coerced():
 
 def test_est_tokens_is_zero_for_empty():
     assert paths.est_tokens("") == 0 and paths.est_tokens("a" * 400) == 100
+
+
+def test_fake_home_isolates_both_halves(fake_home):
+    """A regression guard with a real incident behind it.
+
+    `fake_home` once set TARE_HOME only. The two halves read their root from
+    different variables, so swarm stayed pointed at the operator's real
+    ~/.claude, and a test that installed both wrote eight hook entries into
+    it -- aimed at pytest temp paths that were gone by the time it finished.
+
+    Assert on the modules' own resolution, not on the environment: what
+    matters is where a write would actually land.
+    """
+    from swarm import paths as swarm_paths
+    from tare import paths as tare_paths
+
+    assert tare_paths.claude_home() == fake_home
+    assert swarm_paths.claude_home() == fake_home
+    # The settings file is the one both halves write, and the one that got hurt.
+    assert tare_paths.settings_path() == swarm_paths.settings_path()
+    assert str(fake_home) in str(swarm_paths.settings_path())

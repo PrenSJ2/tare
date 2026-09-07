@@ -390,3 +390,104 @@ def test_the_skill_only_names_commands_that_exist(fake_home, capsys):
         capsys.readouterr()
 
     assert not missing, f"skill names commands that do not exist: {missing}"
+
+
+def _fake_bin(home, *names):
+    """Real files with the right NAMES on a fake PATH.
+
+    Both installers validate the executable's basename -- `is_installed()`
+    refuses a hook pointing at a binary that is missing or wrongly named -- so
+    a path that merely exists is not enough.
+    """
+    bindir = home / "bin"
+    bindir.mkdir(parents=True, exist_ok=True)
+    made = {}
+    for name in names:
+        exe = bindir / name
+        exe.write_text("#!/bin/sh\nexit 0\n")
+        exe.chmod(0o755)
+        made[name] = str(exe)
+    return made
+
+
+# --- `tare setup`: both halves, one command --------------------------------
+
+def test_setup_installs_both_halves(fake_home, monkeypatch, capsys):
+    """Knowing that `tare install` and `swarm install` both exist, and in
+    which order, was a step a new operator could only learn by reading far
+    enough down the README."""
+    import json
+    import shutil
+
+    from swarm import install as swarm_install
+    from tare import cli, install as install_mod, paths
+
+    # Pretend every executable is on PATH; the names are what install()
+    # validates against, so they have to be right.
+    fakes = _fake_bin(fake_home, "tare", "swarm", "swarm-hook",
+                      "swarm-keepgoing", "swarm-goal")
+    monkeypatch.setattr(shutil, "which", lambda name: fakes.get(name))
+
+    assert cli._cmd_setup(None, None) == 0
+
+    assert install_mod.is_installed()                 # capability half
+    assert paths.skill_install_path().is_file()
+    # The agent half has no is_installed(); its evidence is the recording
+    # hook being registered and every event this project owns appearing.
+    assert swarm_install.registered_command() is not None
+    registered = json.loads(paths.settings_path().read_text())["hooks"]
+    for event in (*swarm_install.EVENTS, "Stop", "SessionStart", "SubagentStart"):
+        assert event in registered, f"{event} not registered"
+
+    out = capsys.readouterr().out
+    assert "capability half" in out and "agent half" in out
+    assert "/goal skill written to" in out
+
+
+def test_setup_survives_a_missing_agent_half(fake_home, monkeypatch, capsys):
+    """tare works without swarm. A missing executable is reported, not fatal."""
+    import shutil
+
+    from tare import cli, install as install_mod
+
+    fakes = _fake_bin(fake_home, "tare")
+    monkeypatch.setattr(shutil, "which", lambda name: fakes.get(name))
+
+    assert cli._cmd_setup(None, None) == 0
+    assert install_mod.is_installed()                 # the half that could run, did
+
+    out = capsys.readouterr().out
+    assert "not on PATH" in out
+
+
+def test_setup_names_the_fix_when_swarm_goal_is_missing(fake_home, monkeypatch, capsys):
+    """The commonest cause is an install predating that executable, and
+    nothing else about the setup looks wrong -- so say so."""
+    import shutil
+
+    from tare import cli
+
+    present = _fake_bin(fake_home, "tare", "swarm", "swarm-hook", "swarm-keepgoing")
+    monkeypatch.setattr(shutil, "which", lambda name: present.get(name))
+
+    assert cli._cmd_setup(None, None) == 0
+    out = capsys.readouterr().out
+    assert "swarm-goal missing" in out
+    assert "uv tool install" in out
+
+
+def test_setup_is_idempotent(fake_home, monkeypatch):
+    """Re-running must replace this project's own entries, not stack them."""
+    import json
+    import shutil
+
+    from tare import cli, paths
+
+    fakes = _fake_bin(fake_home, "tare", "swarm", "swarm-hook",
+                      "swarm-keepgoing", "swarm-goal")
+    monkeypatch.setattr(shutil, "which", lambda name: fakes.get(name))
+
+    cli._cmd_setup(None, None)
+    first = json.loads(paths.settings_path().read_text())
+    cli._cmd_setup(None, None)
+    assert json.loads(paths.settings_path().read_text()) == first

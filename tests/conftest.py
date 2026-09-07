@@ -23,7 +23,20 @@ def fake_home(tmp_path, monkeypatch):
     (home / "plugins" / "cache").mkdir(parents=True)
     (home / "plugins" / "marketplaces").mkdir(parents=True)
     (home / "projects").mkdir(parents=True)
+    # SWARM_HOME as well as TARE_HOME, and this is not belt-and-braces.
+    #
+    # The two halves read their root from different variables, so a fixture
+    # setting only TARE_HOME isolated tare and left swarm pointing at the
+    # operator's real ~/.claude. A test exercising both halves then wrote
+    # eight hook entries into the real settings.json -- pointing at pytest
+    # temp paths that no longer existed by the time it finished, so every
+    # later session would have run a hook that could not be found.
+    #
+    # Fixed here rather than in that one test because the hole belongs to the
+    # fixture: any future test touching both halves falls into it, and the
+    # damage is silent until somebody reads their own settings file.
     monkeypatch.setenv("TARE_HOME", str(home))
+    monkeypatch.setenv("SWARM_HOME", str(home))
     return home
 
 

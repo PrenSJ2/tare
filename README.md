@@ -52,15 +52,23 @@ uv tool install .          # or: pipx install .
 Then, in this order:
 
 ```bash
-tare install               # the lookup skill + a SessionStart hook
+tare setup                 # both halves: the skill, every hook, and /goal
 tare build                 # scan + mine + tag + edges + buckets + index
 tare audit                 # what your always-loaded context costs today
 ```
 
-**`tare install` comes first and is not optional.** The skill and the hook are
-what make a shelved capability reachable again; `tare vault --apply` refuses to
-run without them, because shelving something you can no longer find is just
-deleting it slowly.
+**`tare setup` comes first and is not optional.** The skill and the
+`SessionStart` hook are what make a shelved capability reachable again; `tare
+vault --apply` refuses to run without them, because shelving something you can
+no longer find is just deleting it slowly.
+
+It registers both halves in one go, because there is nothing to decide between
+them: the capability half's skill and hook, the agent half's recording hooks,
+the `Stop` hook behind `keepgoing`, the goal hooks, and the `/goal` skill.
+Everything it adds is inert until you opt in — a registered `Stop` hook does
+nothing until a repository is armed, and the goal hooks emit nothing until a
+goal is set. (`tare install` and `swarm install` still do the two halves
+separately if you want only one.)
 
 `tare build` is the slow one — it shells out to `claude -p` once per untagged
 capability to normalise descriptions, and caches by content hash so a re-run is
