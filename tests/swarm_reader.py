@@ -287,3 +287,86 @@ def test_a_corrupt_stream_line_does_not_hide_the_end_record(fake_home):
         + json.dumps({"ts": "2026-09-11T10:00:00+00:00", "session": "s9",
                       "event": "session_end", "reason": "other"}) + "\n")
     assert reader.session_state("proj", "s9").state == "ended"
+
+
+def test_fleet_keeps_session_identity(fake_home):
+    """Two sessions in ONE project must not arrive merged.
+
+    The old return type was dict[project, list[AgentRun]], which made a live
+    session and a dead one in the same repository indistinguishable.
+    """
+    write_session(fake_home, "live1", [
+        ("toolu_a", "aaaaaaaaaaaaaaaa", "live work", "general-purpose", "sonnet")])
+    write_agent(fake_home, "aaaaaaaaaaaaaaaa",
+                "2026-08-20T10:00:00.000Z", "2026-08-20T10:01:00.000Z")
+    write_session(fake_home, "dead1", [
+        ("toolu_b", "bbbbbbbbbbbbbbbb", "old work", "general-purpose", "sonnet")])
+    write_agent(fake_home, "bbbbbbbbbbbbbbbb",
+                "2026-08-20T10:00:00.000Z", "2026-08-20T10:01:00.000Z")
+    age_transcript(fake_home, "live1", 60)
+    age_transcript(fake_home, "dead1", 40 * 3600)
+
+    got = reader.fleet()
+    assert [s.session for s in got] == ["live1", "dead1"]      # live first
+    assert got[0].project == got[1].project == "proj"
+    assert got[0].state.state == "live"
+    assert got[1].state.state == "cold"
+
+
+def test_fleet_does_not_parse_a_session_that_is_over(fake_home, monkeypatch):
+    """The saving must not silently regress into a full walk.
+
+    Parsing the 25 main transcripts is 86% of the console payload's cost, and
+    on the machine this was built for 21 of them yield nothing.
+    """
+    write_session(fake_home, "dead2", [
+        ("toolu_c", "cccccccccccccccc", "old work", "general-purpose", "sonnet")])
+    age_transcript(fake_home, "dead2", 40 * 3600)
+
+    parsed = []
+    real = reader.read_session
+    monkeypatch.setattr(reader, "read_session",
+                        lambda s, **kw: parsed.append(s) or real(s, **kw))
+
+    got = reader.fleet()
+    assert parsed == []                    # nobody looked
+    assert got[0].read is False
+    assert got[0].runs == []
+
+
+def test_read_false_is_not_the_same_fact_as_no_agents(fake_home):
+    """A live session that dispatched nothing is read and empty.
+    A cold one is unread. The UI must be able to tell them apart.
+    """
+    write_session(fake_home, "empty", [])
+    write_session(fake_home, "over", [])
+    age_transcript(fake_home, "empty", 60)
+    age_transcript(fake_home, "over", 40 * 3600)
+
+    by_id = {s.session: s for s in reader.fleet()}
+    assert by_id["empty"].read is True and by_id["empty"].runs == []
+    assert by_id["over"].read is False and by_id["over"].runs == []
+
+
+def test_nothing_is_lost(fake_home):
+    """The capability half's bargain, applied to the agent half.
+
+    A view that hides a session must still be able to produce it. include_cold
+    returns every agent, whatever each session's state.
+    """
+    write_session(fake_home, "live3", [
+        ("toolu_d", "dddddddddddddddd", "live work", "general-purpose", "sonnet")])
+    write_agent(fake_home, "dddddddddddddddd",
+                "2026-08-20T10:00:00.000Z", "2026-08-20T10:01:00.000Z")
+    write_session(fake_home, "dead3", [
+        ("toolu_e", "eeeeeeeeeeeeeeee", "old work", "general-purpose", "sonnet")])
+    write_agent(fake_home, "eeeeeeeeeeeeeeee",
+                "2026-08-20T10:00:00.000Z", "2026-08-20T10:01:00.000Z")
+    age_transcript(fake_home, "live3", 60)
+    age_transcript(fake_home, "dead3", 40 * 3600)
+
+    default = {r.agent_id for s in reader.fleet() for r in s.runs}
+    everything = {r.agent_id for s in reader.fleet(include_cold=True) for r in s.runs}
+    assert default == {"dddddddddddddddd"}
+    assert everything == {"dddddddddddddddd", "eeeeeeeeeeeeeeee"}
+    assert all(s.read for s in reader.fleet(include_cold=True))

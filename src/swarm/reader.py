@@ -478,20 +478,44 @@ def all_sessions() -> list[tuple[str, str]]:
     return [(project, session) for _, project, session in out]
 
 
+@dataclass
+class SessionRuns:
+    session: str
+    project: str
+    state: SessionState
+    runs: list[AgentRun]   # empty when unread
+    read: bool             # False = over, and deliberately not parsed
+
+
 def fleet(*, redact: bool = False, now: datetime | None = None,
-          sessions: int = 25) -> dict[str, list[AgentRun]]:
-    """Every agent across every project, grouped by project.
+          sessions: int = 25, include_cold: bool = False) -> list[SessionRuns]:
+    """Every recent session with its agents, live ones first.
 
     Walks the most recent `sessions` transcripts rather than all of them --
     there are hundreds on a working machine and the old ones cannot contain
     anything running.
+
+    Returns sessions rather than a project -> agents mapping. Grouping by
+    project destroyed the one fact the view most needs: two sessions in one
+    repository, one live and one finished on Sunday, arrived merged and
+    unrecoverable.
+
+    A transcript is parsed only when its session is live, or when
+    `include_cold` asks for the rest. `read=False` records that nobody looked,
+    which is NOT the same fact as "dispatched nothing" -- rendering the two
+    identically would state as fact something never examined.
     """
     reference = now or datetime.now().astimezone()
-    out: dict[str, list[AgentRun]] = {}
+    out: list[SessionRuns] = []
     for project, session in all_sessions()[:sessions]:
-        runs = read_session(session, redact=redact, now=reference)
-        if runs:
-            out.setdefault(project, []).extend(runs)
+        state = session_state(project, session, now=reference)
+        wanted = state.state == "live" or include_cold
+        runs = read_session(session, redact=redact, now=reference) if wanted else []
+        out.append(SessionRuns(session=session, project=project, state=state,
+                               runs=runs, read=wanted))
+    # Live first, newest first within each group. `age` ascending is newest
+    # first, and all_sessions() already arrives in that order.
+    out.sort(key=lambda s: (s.state.state != "live", s.state.age))
     return out
 
 
