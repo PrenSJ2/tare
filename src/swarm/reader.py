@@ -51,6 +51,12 @@ _AGENT_ID_RE = re.compile(r"agentId:\s*([a-z0-9]{8,})")
 # How long a subagent transcript may sit untouched before a run with no result
 # is presumed dead rather than still working.
 STALE_AFTER_SECONDS = 900
+# How long a SESSION's transcript may sit untouched before it is presumed
+# over. Deliberately not STALE_AFTER_SECONDS: sessions idle far longer than
+# agents do, and a 15-minute window drops a session you are still in into the
+# fold over a coffee and pops it back when you type. An hour survives lunch
+# and does not survive overnight.
+SESSION_COLD_AFTER_SECONDS = 3600
 
 
 @dataclass
@@ -70,6 +76,16 @@ class AgentRun:
         if self.started and self.ended:
             return (self.ended - self.started).total_seconds()
         return None
+
+
+@dataclass
+class SessionState:
+    session: str
+    project: str
+    state: str          # "ended" | "live" | "cold"
+    by: str             # "session_end" | "mtime" -- which signal decided
+    age: float          # seconds since the transcript's last write
+    reason: str | None = None   # the session_end reason, when by == "session_end"
 
 
 def _ts(value) -> datetime | None:
@@ -114,6 +130,94 @@ def session_transcript(session: str) -> Path | None:
     for candidate in paths.projects_dir().rglob(f"{session}.jsonl"):
         return candidate
     return None
+
+
+# Scanning a session's stream is a few small reads, but fleet() does it for 25
+# sessions on every payload build. Keyed on the files' own identity rather
+# than a clock, so a stream appended to mid-session is re-read and a finished
+# one is not.
+_ENDED_CACHE: dict[str, tuple[tuple, str | None]] = {}
+
+
+def _session_end_reason(session: str) -> str | None:
+    """The reason a session's stream says it ended, or None if it never did.
+
+    swarm's SessionEnd hook writes this record; `project()` carries the reason
+    through. It is the only signal that can say a session is over rather than
+    merely quiet -- but it exists for a session only if the recording hooks
+    were registered when it ran, which is why every caller has a fallback.
+
+    A session crossing UTC midnight writes more than one stream file, so every
+    file carrying the id is scanned.
+    """
+    try:
+        streams = sorted(paths.runs_dir().glob(f"*-{session}.jsonl"))
+    except OSError:
+        return None
+
+    fingerprint = []
+    for path in streams:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        fingerprint.append((str(path), stat.st_mtime, stat.st_size))
+    key = tuple(fingerprint)
+
+    cached = _ENDED_CACHE.get(session)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+
+    reason = None
+    for path in streams:
+        for obj in _iter_json(path):
+            if obj.get("event") == "session_end":
+                reason = obj.get("reason") or "unknown"
+                break
+        if reason is not None:
+            break
+    _ENDED_CACHE[session] = (key, reason)
+    return reason
+
+
+def session_state(project: str, session: str, *,
+                  now: datetime | None = None) -> SessionState:
+    """Whether a session is still going, and which signal decided it.
+
+    Two tiers, in order of certainty. A `session_end` record is certain: the
+    session is over and we know why. Everything else is inferred from the
+    transcript's last write -- the only tier that works when the recording
+    hooks were never installed, or the process was killed outright.
+
+    `by` is returned rather than folded away because the two are not the same
+    claim, and a view that renders them identically is lying about one of
+    them. This is the same discipline `shells.py` follows when it says
+    "project" where it cannot say "session".
+
+    The process table was considered as a third signal and rejected: a
+    `claude` process exposes its working directory and not its session id, so
+    it can only speak at project granularity -- and a repository with three
+    concurrent sessions is not a corner case on a working machine.
+    """
+    reference = now or datetime.now().astimezone()
+    transcript = session_transcript(session)
+    age = float("inf")
+    if transcript is not None:
+        try:
+            # Clamped at zero: a future mtime means clock skew, and a
+            # live-looking dead session is a smaller lie than a hidden live one.
+            age = max(0.0, reference.timestamp() - transcript.stat().st_mtime)
+        except OSError:
+            age = float("inf")   # unreadable is not a session we may call live
+
+    reason = _session_end_reason(session)
+    if reason is not None:
+        return SessionState(session=session, project=project, state="ended",
+                            by="session_end", age=age, reason=reason)
+
+    state = "live" if age < SESSION_COLD_AFTER_SECONDS else "cold"
+    return SessionState(session=session, project=project, state=state,
+                        by="mtime", age=age)
 
 
 # The directory listing is the hot path, not the parsing. `detail()`,

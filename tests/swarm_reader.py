@@ -55,6 +55,24 @@ def write_agent(home, agent_id, start, end, lines=3):
     (d / f"agent-{agent_id}.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
 
 
+def write_stream(home, session, day, events):
+    """events: list of dicts, each an already-projected stream record."""
+    d = home / "runs"
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{day}-{session}.jsonl"
+    path.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+    return path
+
+
+def age_transcript(home, session, seconds):
+    """Backdate a session transcript's mtime by `seconds`."""
+    import os
+    import time as _time
+    path = home / "projects" / "proj" / f"{session}.jsonl"
+    when = _time.time() - seconds
+    os.utime(path, (when, when))
+
+
 def test_reads_label_type_model_and_real_duration(fake_home):
     write_session(fake_home, "sess", [("toolu_1", "a1111111111111111", "Review Task 8", "general-purpose", "sonnet")])
     write_agent(fake_home, "a1111111111111111", "2026-08-20T10:00:05.000Z", "2026-08-20T10:01:05.000Z")
@@ -162,3 +180,110 @@ def test_render_flags_an_agent_running_far_longer_than_its_peers():
 def test_render_survives_a_run_with_no_timing():
     out = watch.render([_run("mystery", 0, status="unknown")], now=datetime(2026, 8, 20, 10, 5, tzinfo=timezone.utc))
     assert "mystery" in out
+
+
+# --- session state -----------------------------------------------------------
+
+
+def test_a_session_end_record_is_certain_and_beats_a_warm_mtime(fake_home):
+    """The cctv case: written twelve minutes ago, but definitively over.
+
+    mtime alone would call this live. The stream knows better, and the state
+    must say which signal decided so a reader can tell the two apart.
+    """
+    write_session(fake_home, "s1", [])
+    write_stream(fake_home, "s1", "2026-09-11", [
+        {"ts": "2026-09-11T10:00:00+00:00", "session": "s1", "event": "session_end",
+         "reason": "prompt_input_exit"},
+    ])
+    st = reader.session_state("proj", "s1")
+    assert st.state == "ended"
+    assert st.by == "session_end"
+    assert st.reason == "prompt_input_exit"
+
+
+def test_no_stream_and_a_warm_transcript_reads_live(fake_home):
+    write_session(fake_home, "s2", [])
+    age_transcript(fake_home, "s2", 60)
+    st = reader.session_state("proj", "s2")
+    assert st.state == "live"
+    assert st.by == "mtime"
+    assert st.reason is None
+
+
+def test_no_stream_and_a_cold_transcript_reads_cold(fake_home):
+    write_session(fake_home, "s3", [])
+    age_transcript(fake_home, "s3", 33 * 3600)
+    st = reader.session_state("proj", "s3")
+    assert st.state == "cold"
+    assert st.by == "mtime"
+
+
+def test_the_window_boundary(fake_home):
+    write_session(fake_home, "s4", [])
+    age_transcript(fake_home, "s4", reader.SESSION_COLD_AFTER_SECONDS - 30)
+    assert reader.session_state("proj", "s4").state == "live"
+    age_transcript(fake_home, "s4", reader.SESSION_COLD_AFTER_SECONDS + 30)
+    assert reader.session_state("proj", "s4").state == "cold"
+
+
+def test_a_stream_spanning_utc_midnight_still_resolves_its_end(fake_home):
+    """One session, two stream files. The end is in the second."""
+    write_session(fake_home, "s5", [])
+    write_stream(fake_home, "s5", "2026-09-10", [
+        {"ts": "2026-09-10T23:59:00+00:00", "session": "s5", "event": "subagent_start"},
+    ])
+    write_stream(fake_home, "s5", "2026-09-11", [
+        {"ts": "2026-09-11T00:01:00+00:00", "session": "s5", "event": "session_end",
+         "reason": "other"},
+    ])
+    st = reader.session_state("proj", "s5")
+    assert st.state == "ended"
+    assert st.reason == "other"
+
+
+def test_clear_retires_the_session_id(fake_home):
+    """/clear ends that id even though the operator keeps working."""
+    write_session(fake_home, "s6", [])
+    age_transcript(fake_home, "s6", 60)
+    write_stream(fake_home, "s6", "2026-09-11", [
+        {"ts": "2026-09-11T10:00:00+00:00", "session": "s6", "event": "session_end",
+         "reason": "clear"},
+    ])
+    st = reader.session_state("proj", "s6")
+    assert st.state == "ended"
+    assert st.reason == "clear"
+
+
+def test_without_a_runs_directory_everything_falls_to_mtime(fake_home):
+    """The tier the live corpus does not currently exercise.
+
+    On a machine where swarm's recording hooks were never installed there is
+    no stream at all, and mtime is the only signal there is.
+    """
+    assert not (fake_home / "runs").exists()
+    write_session(fake_home, "s7", [])
+    age_transcript(fake_home, "s7", 60)
+    st = reader.session_state("proj", "s7")
+    assert st.by == "mtime"
+    assert st.state == "live"
+
+
+def test_a_future_mtime_clamps_to_live(fake_home):
+    """Clock skew is wrong in the safe direction: never hide a live session."""
+    write_session(fake_home, "s8", [])
+    age_transcript(fake_home, "s8", -600)
+    st = reader.session_state("proj", "s8")
+    assert st.age == 0
+    assert st.state == "live"
+
+
+def test_a_corrupt_stream_line_does_not_hide_the_end_record(fake_home):
+    write_session(fake_home, "s9", [])
+    d = fake_home / "runs"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"2026-09-11-s9.jsonl").write_text(
+        "{not json at all\n"
+        + json.dumps({"ts": "2026-09-11T10:00:00+00:00", "session": "s9",
+                      "event": "session_end", "reason": "other"}) + "\n")
+    assert reader.session_state("proj", "s9").state == "ended"
