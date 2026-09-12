@@ -39,7 +39,7 @@ def test_it_degrades_without_the_agent_reader(fake_home, monkeypatch):
     """
     monkeypatch.setattr(console, "_reader", lambda: None)
     p = console.payload(fresh=True)
-    assert p["fleet"]["projects"] == []
+    assert p["fleet"]["sessions"] == []
     assert "swarm is not installed" in p["fleet"]["unavailable"]
     assert p["nodes"] is not None
 
@@ -117,7 +117,7 @@ def test_the_payload_is_cached_between_polls(fake_home, monkeypatch):
     real = console._build_payload
     monkeypatch.setattr(console, "_build_payload",
                         lambda **kw: (calls.append(1), real(**kw))[1])
-    console._PAYLOAD_CACHE = None
+    console._PAYLOAD_CACHE = {}
     console.payload()
     console.payload()
     console.payload()
@@ -129,7 +129,7 @@ def test_fresh_bypasses_the_cache(fake_home, monkeypatch):
     real = console._build_payload
     monkeypatch.setattr(console, "_build_payload",
                         lambda **kw: (calls.append(1), real(**kw))[1])
-    console._PAYLOAD_CACHE = None
+    console._PAYLOAD_CACHE = {}
     console.payload()
     console.payload(fresh=True)
     assert len(calls) == 2
@@ -138,7 +138,7 @@ def test_fresh_bypasses_the_cache(fake_home, monkeypatch):
 def test_redact_is_not_served_from_a_non_redacted_cache(fake_home, monkeypatch):
     """Serving cached unredacted data to a redacted request would leak exactly
     what redaction exists to withhold."""
-    console._PAYLOAD_CACHE = None
+    console._PAYLOAD_CACHE = {}
     console.payload(redact=False)
     calls = []
     real = console._build_payload
@@ -146,3 +146,65 @@ def test_redact_is_not_served_from_a_non_redacted_cache(fake_home, monkeypatch):
                         lambda **kw: (calls.append(kw), real(**kw))[1])
     console.payload(redact=True)
     assert calls and calls[0]["redact"] is True
+
+
+def test_payload_carries_session_state_and_the_signal_that_decided_it(fake_home):
+    db.connect()
+    fleet = console.payload()["fleet"]
+    assert "sessions" in fleet
+    assert "projects" not in fleet          # the old shape is gone, not aliased
+    for session in fleet["sessions"]:
+        assert session["state"] in ("ended", "live", "cold")
+        assert session["by"] in ("session_end", "mtime")
+        assert isinstance(session["read"], bool)
+
+
+def test_age_is_json_safe_when_a_transcript_is_missing(fake_home, monkeypatch):
+    """An infinite age is not valid JSON. It must arrive as null."""
+    from datetime import datetime
+
+    class FakeState:
+        state, by, age, reason = "cold", "mtime", float("inf"), None
+
+    class FakeSession:
+        session, project, state, runs, read = "s", "proj", FakeState(), [], False
+
+    fake = type("R", (), {
+        "fleet": staticmethod(lambda **kw: [FakeSession()]),
+        "detail": staticmethod(lambda *a, **kw: None),
+        "all_sessions": staticmethod(lambda: []),
+    })
+    monkeypatch.setattr(console, "_reader", lambda: fake)
+    console._PAYLOAD_CACHE = {}
+    out = json.dumps(console.payload())
+    assert "Infinity" not in out
+    assert console.payload()["fleet"]["sessions"][0]["age"] is None
+
+
+def test_include_cold_reaches_the_reader(fake_home, monkeypatch):
+    seen = []
+    fake = type("R", (), {
+        "fleet": staticmethod(lambda **kw: seen.append(kw.get("include_cold")) or []),
+        "detail": staticmethod(lambda *a, **kw: None),
+        "all_sessions": staticmethod(lambda: []),
+    })
+    monkeypatch.setattr(console, "_reader", lambda: fake)
+    console._PAYLOAD_CACHE = {}
+    console.payload()
+    console.payload(include_cold=True)
+    assert seen == [False, True]
+
+
+def test_the_two_payload_variants_do_not_evict_each_other(fake_home, monkeypatch):
+    """One cache slot meant opening the fold discarded the live payload, and
+    the next poll paid the full cost again."""
+    builds = []
+    real = console._build_payload
+    monkeypatch.setattr(console, "_build_payload",
+                        lambda **kw: builds.append(kw.get("include_cold")) or real(**kw))
+    db.connect()
+    console._PAYLOAD_CACHE = {}
+    console.payload()
+    console.payload(include_cold=True)
+    console.payload()                 # must be served from cache, not rebuilt
+    assert builds == [False, True]

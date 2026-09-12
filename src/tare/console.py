@@ -234,18 +234,22 @@ def _shells() -> dict:
     }
 
 
-def _fleet(redact: bool) -> dict:
+def _fleet(redact: bool, *, include_cold: bool = False) -> dict:
+    """Sessions, each carrying whether it is still going and how we know.
+
+    Sessions rather than projects: a live session and one finished on Sunday
+    can share a repository, and the old shape merged them irretrievably.
+    """
     reader = _reader()
     if reader is None:
-        return {"generated": datetime.now().astimezone().isoformat(), "projects": [],
+        return {"generated": datetime.now().astimezone().isoformat(), "sessions": [],
                 "unavailable": "swarm is not installed — agent history needs it"}
     now = datetime.now().astimezone()
     home = str(Path.home())
-    projects = []
-    for project, runs in sorted(reader.fleet(redact=redact, now=now).items(),
-                                key=lambda kv: -len(kv[1])):
+    sessions = []
+    for found in reader.fleet(redact=redact, now=now, include_cold=include_cold):
         agents = []
-        for run in sorted(runs, key=lambda r: (r.status != "running", -(r.seconds or 0))):
+        for run in sorted(found.runs, key=lambda r: (r.status != "running", -(r.seconds or 0))):
             info = reader.detail(run.agent_id, redact=redact)
             agents.append({
                 "id": run.agent_id[:10], "label": run.label, "type": run.agent_type,
@@ -257,32 +261,47 @@ def _fleet(redact: bool) -> dict:
                 "cmds": info.commands[:4] if info else [],
                 "report": (info.report[:280] if info else ""),
             })
-        projects.append({"name": project, "agents": agents})
-    return {"generated": now.isoformat(), "projects": projects}
+        age = found.state.age
+        sessions.append({
+            "id": found.session[:8],
+            "project": found.project,
+            "state": found.state.state,
+            "by": found.state.by,
+            # inf is not valid JSON, and a missing transcript has no age to report.
+            "age": round(age) if age != float("inf") else None,
+            "reason": found.state.reason,
+            "read": found.read,
+            "agents": agents,
+        })
+    return {"generated": now.isoformat(), "sessions": sessions}
 
 
 # Assembling a payload walks the transcripts and re-queries SQLite -- about
 # 2 seconds on a real corpus. Two panels poll independently, so without this
 # every poll paid that cost twice and the panels sat on "reading" indefinitely.
 # The TTL is short enough that a running agent still appears promptly.
-_PAYLOAD_CACHE: tuple[float, bool, dict] | None = None
+#
+# Keyed by variant rather than a single slot: the fold requests include_cold
+# once, and a single slot meant that request discarded the live payload the
+# 5-second poll had just paid for.
+_PAYLOAD_CACHE: dict[tuple[bool, bool], tuple[float, dict]] = {}
 PAYLOAD_TTL_SECONDS = 4.0
 
 
-def payload(*, redact: bool = False, fresh: bool = False) -> dict:
+def payload(*, redact: bool = False, fresh: bool = False,
+            include_cold: bool = False) -> dict:
     """Everything the page needs. Cached briefly; see the note above."""
-    global _PAYLOAD_CACHE
     now = time.monotonic()
-    if (not fresh and _PAYLOAD_CACHE is not None
-            and _PAYLOAD_CACHE[1] == redact
-            and now - _PAYLOAD_CACHE[0] < PAYLOAD_TTL_SECONDS):
-        return _PAYLOAD_CACHE[2]
-    built = _build_payload(redact=redact)
-    _PAYLOAD_CACHE = (now, redact, built)
+    key = (redact, include_cold)
+    hit = _PAYLOAD_CACHE.get(key)
+    if not fresh and hit is not None and now - hit[0] < PAYLOAD_TTL_SECONDS:
+        return hit[1]
+    built = _build_payload(redact=redact, include_cold=include_cold)
+    _PAYLOAD_CACHE[key] = (now, built)
     return built
 
 
-def _build_payload(*, redact: bool = False) -> dict:
+def _build_payload(*, redact: bool = False, include_cold: bool = False) -> dict:
     conn = db.connect()
     try:
         report = audit_mod.audit(conn)
@@ -319,7 +338,7 @@ def _build_payload(*, redact: bool = False) -> dict:
         "memory": mem,
         "history": past,
         "shells": _shells(),
-        "fleet": _fleet(redact),
+        "fleet": _fleet(redact, include_cold=include_cold),
         "orch": _orchestration(redact),
     }
 
@@ -398,7 +417,11 @@ class _Handler(BaseHTTPRequestHandler):
                     {"at": e.at.isoformat(), "tool": e.tool, "detail": e.detail}
                     for e in events]).encode(), "application/json; charset=utf-8")
             elif self.path.startswith("/api/data"):
-                self._send(json.dumps(payload(redact=self.redact)).encode(),
+                # The fold asks for this once when it opens. The 5-second poll
+                # never does, so it never pays for sessions that are over.
+                from urllib.parse import parse_qs, urlparse  # noqa: PLC0415
+                earlier = (parse_qs(urlparse(self.path).query).get("earlier") or ["0"])[0] == "1"
+                self._send(json.dumps(payload(redact=self.redact, include_cold=earlier)).encode(),
                            "application/json; charset=utf-8")
             elif self.path in ("/", "/index.html"):
                 self._send(_page(), "text/html; charset=utf-8")
