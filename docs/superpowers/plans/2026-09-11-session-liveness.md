@@ -754,7 +754,7 @@ Replace lines 475-503 (from `const agents = D.fleet.projects.flatMap(...)` throu
   // Only sessions that dispatched something get a heading. Eleven of twelve
   // live sessions on a working machine have dispatched nothing, and eleven
   // empty headings are the noise this view was built to remove.
-  $("fleet").innerHTML = busy.map(sessionBlock).join("")
+  $("fleet").innerHTML = busy.map(s => sessionBlock(s, false)).join("")
     + (idle ? `<div class="meta" style="margin:.9rem 0">${idle} other session${
         idle === 1 ? "" : "s"} open, none dispatching</div>` : "")
     + (busy.length || idle ? "" : `<div class="meta">no sessions open</div>`);
