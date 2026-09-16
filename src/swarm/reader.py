@@ -51,6 +51,27 @@ _AGENT_ID_RE = re.compile(r"agentId:\s*([a-z0-9]{8,})")
 # How long a subagent transcript may sit untouched before a run with no result
 # is presumed dead rather than still working.
 STALE_AFTER_SECONDS = 900
+# How long a SESSION's transcript may sit untouched before it is presumed
+# over. Deliberately not STALE_AFTER_SECONDS: sessions idle far longer than
+# agents do, and a 15-minute window drops a session you are still in into the
+# fold over a coffee and pops it back when you type. An hour survives lunch
+# and does not survive overnight.
+SESSION_COLD_AFTER_SECONDS = 3600
+
+# `claude --resume` / `claude -c` reuses the session id and keeps appending to
+# the same transcript, so a session_end record does not retire the id -- it
+# only records that the session ended ONCE. A transcript still being written
+# long afterwards means the record is stale, and honouring it would hide a
+# live session, which is the one error this must never make.
+#
+# Measured on the real corpus: a normal end has
+# transcript_mtime - session_end_ts in [-38m, ~0] (a session can idle a while
+# before it actually exits, so negative is the normal case); a resumed one
+# measured +4167 and +16685 minutes. 120s sits safely inside the gap between
+# those two populations -- generous enough that the normal population's
+# essentially-simultaneous write never trips it, nowhere near the smallest
+# resumed gap.
+SESSION_END_STALE_AFTER_SECONDS = 120
 
 
 @dataclass
@@ -70,6 +91,16 @@ class AgentRun:
         if self.started and self.ended:
             return (self.ended - self.started).total_seconds()
         return None
+
+
+@dataclass
+class SessionState:
+    session: str
+    project: str
+    state: str          # "ended" | "live" | "cold"
+    by: str             # "session_end" | "mtime" -- which signal decided
+    age: float          # seconds since the transcript's last write
+    reason: str | None = None   # the session_end reason, when by == "session_end"
 
 
 def _ts(value) -> datetime | None:
@@ -114,6 +145,117 @@ def session_transcript(session: str) -> Path | None:
     for candidate in paths.projects_dir().rglob(f"{session}.jsonl"):
         return candidate
     return None
+
+
+# Scanning a session's stream is a few small reads, but fleet() does it for 25
+# sessions on every payload build. Keyed on the files' own identity rather
+# than a clock, so a stream appended to mid-session is re-read and a finished
+# one is not.
+_ENDED_CACHE: dict[str, tuple[tuple, tuple[str, datetime | None] | None]] = {}
+
+
+def _latest_session_end(session: str) -> tuple[str, datetime | None] | None:
+    """The most recent (reason, ts) a session's stream says it ended, or None.
+
+    swarm's SessionEnd hook writes this record; `project()` carries the reason
+    through. It is the only signal that can say a session is over rather than
+    merely quiet -- but it exists for a session only if the recording hooks
+    were registered when it ran, which is why every caller has a fallback.
+
+    `claude --resume` reuses the session id, so a stream can carry more than
+    one session_end record for it -- the session ended, was resumed, and may
+    have ended again. The LATEST one is what is current, not the first one on
+    disk: files are scanned oldest-first (sorted by name) and records within a
+    file are appended in order, so simply not stopping at the first match and
+    keeping the last one seen yields the latest.
+
+    A session crossing UTC midnight writes more than one stream file, so every
+    file carrying the id is scanned.
+    """
+    try:
+        streams = sorted(paths.runs_dir().glob(f"*-{session}.jsonl"))
+    except OSError:
+        return None
+
+    fingerprint = []
+    for path in streams:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        fingerprint.append((str(path), stat.st_mtime, stat.st_size))
+    key = tuple(fingerprint)
+
+    cached = _ENDED_CACHE.get(session)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+
+    latest: tuple[str, datetime | None] | None = None
+    for path in streams:
+        for obj in _iter_json(path):
+            if obj.get("event") == "session_end":
+                reason = obj.get("reason") or "unknown"
+                latest = (reason, _ts(obj.get("ts")))
+    _ENDED_CACHE[session] = (key, latest)
+    return latest
+
+
+def session_state(project: str, session: str, *,
+                  now: datetime | None = None) -> SessionState:
+    """Whether a session is still going, and which signal decided it.
+
+    Two tiers, in order of certainty. A `session_end` record is certain: the
+    session is over and we know why. Everything else is inferred from the
+    transcript's last write -- the only tier that works when the recording
+    hooks were never installed, or the process was killed outright.
+
+    `by` is returned rather than folded away because the two are not the same
+    claim, and a view that renders them identically is lying about one of
+    them. This is the same discipline `shells.py` follows when it says
+    "project" where it cannot say "session".
+
+    A `session_end` record is trusted only while it is fresh. `claude --resume`
+    / `claude -c` reuses the session id and keeps appending to the same
+    transcript, so a session_end record does not retire the id -- it only
+    records that the session ended ONCE. A transcript still being written long
+    afterwards means the record is stale, and honouring it would hide a live
+    session, which is the one error this must never make. See
+    SESSION_END_STALE_AFTER_SECONDS for the measured boundary.
+
+    The process table was considered as a third signal and rejected: a
+    `claude` process exposes its working directory and not its session id, so
+    it can only speak at project granularity -- and a repository with three
+    concurrent sessions is not a corner case on a working machine.
+    """
+    reference = now or datetime.now().astimezone()
+    transcript = session_transcript(session)
+    age = float("inf")
+    mtime_epoch: float | None = None
+    if transcript is not None:
+        try:
+            mtime_epoch = transcript.stat().st_mtime
+            # Clamped at zero: a future mtime means clock skew, and a
+            # live-looking dead session is a smaller lie than a hidden live one.
+            age = max(0.0, reference.timestamp() - mtime_epoch)
+        except OSError:
+            age = float("inf")   # unreadable is not a session we may call live
+
+    found = _latest_session_end(session)
+    if found is not None:
+        reason, end_ts = found
+        # Staleness needs both a timestamp on the record and a readable
+        # transcript to compare it against. Missing either means freshness
+        # cannot be verified, and the safe default is to NOT trust a
+        # certainty that cannot be checked -- fall through to the mtime tier.
+        stale = end_ts is None or mtime_epoch is None or (
+            mtime_epoch - end_ts.timestamp() > SESSION_END_STALE_AFTER_SECONDS)
+        if not stale:
+            return SessionState(session=session, project=project, state="ended",
+                                by="session_end", age=age, reason=reason)
+
+    state = "live" if age < SESSION_COLD_AFTER_SECONDS else "cold"
+    return SessionState(session=session, project=project, state=state,
+                        by="mtime", age=age)
 
 
 # The directory listing is the hot path, not the parsing. `detail()`,
@@ -374,20 +516,44 @@ def all_sessions() -> list[tuple[str, str]]:
     return [(project, session) for _, project, session in out]
 
 
+@dataclass
+class SessionRuns:
+    session: str
+    project: str
+    state: SessionState
+    runs: list[AgentRun]   # empty when unread
+    read: bool             # False = over, and deliberately not parsed
+
+
 def fleet(*, redact: bool = False, now: datetime | None = None,
-          sessions: int = 25) -> dict[str, list[AgentRun]]:
-    """Every agent across every project, grouped by project.
+          sessions: int = 25, include_cold: bool = False) -> list[SessionRuns]:
+    """Every recent session with its agents, live ones first.
 
     Walks the most recent `sessions` transcripts rather than all of them --
     there are hundreds on a working machine and the old ones cannot contain
     anything running.
+
+    Returns sessions rather than a project -> agents mapping. Grouping by
+    project destroyed the one fact the view most needs: two sessions in one
+    repository, one live and one finished on Sunday, arrived merged and
+    unrecoverable.
+
+    A transcript is parsed only when its session is live, or when
+    `include_cold` asks for the rest. `read=False` records that nobody looked,
+    which is NOT the same fact as "dispatched nothing" -- rendering the two
+    identically would state as fact something never examined.
     """
     reference = now or datetime.now().astimezone()
-    out: dict[str, list[AgentRun]] = {}
+    out: list[SessionRuns] = []
     for project, session in all_sessions()[:sessions]:
-        runs = read_session(session, redact=redact, now=reference)
-        if runs:
-            out.setdefault(project, []).extend(runs)
+        state = session_state(project, session, now=reference)
+        wanted = state.state == "live" or include_cold
+        runs = read_session(session, redact=redact, now=reference) if wanted else []
+        out.append(SessionRuns(session=session, project=project, state=state,
+                               runs=runs, read=wanted))
+    # Live first, newest first within each group. `age` ascending is newest
+    # first, and all_sessions() already arrives in that order.
+    out.sort(key=lambda s: (s.state.state != "live", s.state.age))
     return out
 
 

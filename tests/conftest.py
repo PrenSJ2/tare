@@ -65,6 +65,6 @@ def _clear_payload_cache():
     """
     from tare import console
 
-    console._PAYLOAD_CACHE = None
+    console._PAYLOAD_CACHE = {}
     yield
-    console._PAYLOAD_CACHE = None
+    console._PAYLOAD_CACHE = {}

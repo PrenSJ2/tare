@@ -55,6 +55,24 @@ def write_agent(home, agent_id, start, end, lines=3):
     (d / f"agent-{agent_id}.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
 
 
+def write_stream(home, session, day, events):
+    """events: list of dicts, each an already-projected stream record."""
+    d = home / "runs"
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{day}-{session}.jsonl"
+    path.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+    return path
+
+
+def age_transcript(home, session, seconds):
+    """Backdate a session transcript's mtime by `seconds`."""
+    import os
+    import time as _time
+    path = home / "projects" / "proj" / f"{session}.jsonl"
+    when = _time.time() - seconds
+    os.utime(path, (when, when))
+
+
 def test_reads_label_type_model_and_real_duration(fake_home):
     write_session(fake_home, "sess", [("toolu_1", "a1111111111111111", "Review Task 8", "general-purpose", "sonnet")])
     write_agent(fake_home, "a1111111111111111", "2026-08-20T10:00:05.000Z", "2026-08-20T10:01:05.000Z")
@@ -162,3 +180,272 @@ def test_render_flags_an_agent_running_far_longer_than_its_peers():
 def test_render_survives_a_run_with_no_timing():
     out = watch.render([_run("mystery", 0, status="unknown")], now=datetime(2026, 8, 20, 10, 5, tzinfo=timezone.utc))
     assert "mystery" in out
+
+
+# --- session state -----------------------------------------------------------
+
+
+def _ago(seconds: float) -> str:
+    """An ISO timestamp `seconds` before real now, for stream records.
+
+    Real wall-clock rather than a fixed date: `age_transcript` backdates a
+    transcript's mtime off `time.time()`, and a session_end record's staleness
+    is judged against that same mtime -- so both sides of the comparison have
+    to be anchored to the same clock or the drift they are meant to measure is
+    fictional.
+    """
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
+
+
+def test_a_fresh_session_end_beats_a_warm_mtime(fake_home):
+    """The normal case: the transcript's last write and the session_end are
+    essentially simultaneous, so the record is honoured as certain.
+    """
+    write_session(fake_home, "s1", [])
+    age_transcript(fake_home, "s1", 60)
+    write_stream(fake_home, "s1", "2026-09-11", [
+        {"ts": _ago(65), "session": "s1", "event": "session_end",
+         "reason": "prompt_input_exit"},
+    ])
+    st = reader.session_state("proj", "s1")
+    assert st.state == "ended"
+    assert st.by == "session_end"
+    assert st.reason == "prompt_input_exit"
+
+
+def test_a_stale_session_end_falls_through_to_mtime(fake_home):
+    """The resumed case: `claude --resume` reuses the session id and keeps
+    appending to the same transcript, so a session_end record from hours ago
+    does not retire it -- a transcript written a minute ago means the session
+    is live right now, and the stale record must not hide that.
+    """
+    write_session(fake_home, "s1r", [])
+    age_transcript(fake_home, "s1r", 60)
+    write_stream(fake_home, "s1r", "2026-09-11", [
+        {"ts": _ago(2 * 3600), "session": "s1r", "event": "session_end",
+         "reason": "other"},
+    ])
+    st = reader.session_state("proj", "s1r")
+    assert st.state == "live"
+    assert st.by == "mtime"
+
+
+def test_session_end_staleness_boundary(fake_home):
+    """Both sides of SESSION_END_STALE_AFTER_SECONDS.
+
+    Just inside the tolerance, the record still wins. Just outside it, mtime
+    -- the live signal -- takes over.
+    """
+    tol = reader.SESSION_END_STALE_AFTER_SECONDS
+
+    write_session(fake_home, "sIn", [])
+    age_transcript(fake_home, "sIn", 60)
+    write_stream(fake_home, "sIn", "2026-09-11", [
+        {"ts": _ago(60 + tol - 10), "session": "sIn", "event": "session_end",
+         "reason": "other"},
+    ])
+    st_in = reader.session_state("proj", "sIn")
+    assert st_in.state == "ended"
+    assert st_in.by == "session_end"
+
+    write_session(fake_home, "sOut", [])
+    age_transcript(fake_home, "sOut", 60)
+    write_stream(fake_home, "sOut", "2026-09-11", [
+        {"ts": _ago(60 + tol + 10), "session": "sOut", "event": "session_end",
+         "reason": "other"},
+    ])
+    st_out = reader.session_state("proj", "sOut")
+    assert st_out.state == "live"
+    assert st_out.by == "mtime"
+
+
+def test_two_session_end_records_report_the_latest_reason_not_the_oldest(fake_home):
+    """A session ended, was resumed, and ended again -- across two day-files.
+    The CURRENT reason must win, not whichever file sorts first.
+    """
+    write_session(fake_home, "s1x", [])
+    age_transcript(fake_home, "s1x", 20)
+    write_stream(fake_home, "s1x", "2026-09-10", [
+        {"ts": "2026-09-10T23:59:00+00:00", "session": "s1x",
+         "event": "session_end", "reason": "old-reason"},
+    ])
+    write_stream(fake_home, "s1x", "2026-09-11", [
+        {"ts": _ago(15), "session": "s1x", "event": "session_end", "reason": "clear"},
+    ])
+    st = reader.session_state("proj", "s1x")
+    assert st.state == "ended"
+    assert st.by == "session_end"
+    assert st.reason == "clear"
+
+
+def test_no_stream_and_a_warm_transcript_reads_live(fake_home):
+    write_session(fake_home, "s2", [])
+    age_transcript(fake_home, "s2", 60)
+    st = reader.session_state("proj", "s2")
+    assert st.state == "live"
+    assert st.by == "mtime"
+    assert st.reason is None
+
+
+def test_no_stream_and_a_cold_transcript_reads_cold(fake_home):
+    write_session(fake_home, "s3", [])
+    age_transcript(fake_home, "s3", 33 * 3600)
+    st = reader.session_state("proj", "s3")
+    assert st.state == "cold"
+    assert st.by == "mtime"
+
+
+def test_the_window_boundary(fake_home):
+    write_session(fake_home, "s4", [])
+    age_transcript(fake_home, "s4", reader.SESSION_COLD_AFTER_SECONDS - 30)
+    assert reader.session_state("proj", "s4").state == "live"
+    age_transcript(fake_home, "s4", reader.SESSION_COLD_AFTER_SECONDS + 30)
+    assert reader.session_state("proj", "s4").state == "cold"
+
+
+def test_a_stream_spanning_utc_midnight_still_resolves_its_end(fake_home):
+    """One session, two stream files. The end is in the second.
+
+    The day labels in the filenames are arbitrary -- only the record's own
+    `ts` matters for staleness -- but the naming still exercises the case a
+    stream spans midnight and writes more than one file.
+    """
+    write_session(fake_home, "s5", [])
+    write_stream(fake_home, "s5", "2026-09-10", [
+        {"ts": "2026-09-10T23:59:00+00:00", "session": "s5", "event": "subagent_start"},
+    ])
+    write_stream(fake_home, "s5", "2026-09-11", [
+        {"ts": _ago(30), "session": "s5", "event": "session_end", "reason": "other"},
+    ])
+    st = reader.session_state("proj", "s5")
+    assert st.state == "ended"
+    assert st.reason == "other"
+
+
+def test_clear_retires_the_session_id(fake_home):
+    """/clear ends that id even though the operator keeps working."""
+    write_session(fake_home, "s6", [])
+    age_transcript(fake_home, "s6", 60)
+    write_stream(fake_home, "s6", "2026-09-11", [
+        {"ts": _ago(65), "session": "s6", "event": "session_end", "reason": "clear"},
+    ])
+    st = reader.session_state("proj", "s6")
+    assert st.state == "ended"
+    assert st.reason == "clear"
+
+
+def test_without_a_runs_directory_everything_falls_to_mtime(fake_home):
+    """The tier the live corpus does not currently exercise.
+
+    On a machine where swarm's recording hooks were never installed there is
+    no stream at all, and mtime is the only signal there is.
+    """
+    assert not (fake_home / "runs").exists()
+    write_session(fake_home, "s7", [])
+    age_transcript(fake_home, "s7", 60)
+    st = reader.session_state("proj", "s7")
+    assert st.by == "mtime"
+    assert st.state == "live"
+
+
+def test_a_future_mtime_clamps_to_live(fake_home):
+    """Clock skew is wrong in the safe direction: never hide a live session."""
+    write_session(fake_home, "s8", [])
+    age_transcript(fake_home, "s8", -600)
+    st = reader.session_state("proj", "s8")
+    assert st.age == 0
+    assert st.state == "live"
+
+
+def test_a_corrupt_stream_line_does_not_hide_the_end_record(fake_home):
+    write_session(fake_home, "s9", [])
+    d = fake_home / "runs"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"2026-09-11-s9.jsonl").write_text(
+        "{not json at all\n"
+        + json.dumps({"ts": _ago(5), "session": "s9",
+                      "event": "session_end", "reason": "other"}) + "\n")
+    assert reader.session_state("proj", "s9").state == "ended"
+
+
+def test_fleet_keeps_session_identity(fake_home):
+    """Two sessions in ONE project must not arrive merged.
+
+    The old return type was dict[project, list[AgentRun]], which made a live
+    session and a dead one in the same repository indistinguishable.
+    """
+    write_session(fake_home, "live1", [
+        ("toolu_a", "aaaaaaaaaaaaaaaa", "live work", "general-purpose", "sonnet")])
+    write_agent(fake_home, "aaaaaaaaaaaaaaaa",
+                "2026-08-20T10:00:00.000Z", "2026-08-20T10:01:00.000Z")
+    write_session(fake_home, "dead1", [
+        ("toolu_b", "bbbbbbbbbbbbbbbb", "old work", "general-purpose", "sonnet")])
+    write_agent(fake_home, "bbbbbbbbbbbbbbbb",
+                "2026-08-20T10:00:00.000Z", "2026-08-20T10:01:00.000Z")
+    age_transcript(fake_home, "live1", 60)
+    age_transcript(fake_home, "dead1", 40 * 3600)
+
+    got = reader.fleet()
+    assert [s.session for s in got] == ["live1", "dead1"]      # live first
+    assert got[0].project == got[1].project == "proj"
+    assert got[0].state.state == "live"
+    assert got[1].state.state == "cold"
+
+
+def test_fleet_does_not_parse_a_session_that_is_over(fake_home, monkeypatch):
+    """The saving must not silently regress into a full walk.
+
+    Parsing the 25 main transcripts is 86% of the console payload's cost, and
+    on the machine this was built for 21 of them yield nothing.
+    """
+    write_session(fake_home, "dead2", [
+        ("toolu_c", "cccccccccccccccc", "old work", "general-purpose", "sonnet")])
+    age_transcript(fake_home, "dead2", 40 * 3600)
+
+    parsed = []
+    real = reader.read_session
+    monkeypatch.setattr(reader, "read_session",
+                        lambda s, **kw: parsed.append(s) or real(s, **kw))
+
+    got = reader.fleet()
+    assert parsed == []                    # nobody looked
+    assert got[0].read is False
+    assert got[0].runs == []
+
+
+def test_read_false_is_not_the_same_fact_as_no_agents(fake_home):
+    """A live session that dispatched nothing is read and empty.
+    A cold one is unread. The UI must be able to tell them apart.
+    """
+    write_session(fake_home, "empty", [])
+    write_session(fake_home, "over", [])
+    age_transcript(fake_home, "empty", 60)
+    age_transcript(fake_home, "over", 40 * 3600)
+
+    by_id = {s.session: s for s in reader.fleet()}
+    assert by_id["empty"].read is True and by_id["empty"].runs == []
+    assert by_id["over"].read is False and by_id["over"].runs == []
+
+
+def test_nothing_is_lost(fake_home):
+    """The capability half's bargain, applied to the agent half.
+
+    A view that hides a session must still be able to produce it. include_cold
+    returns every agent, whatever each session's state.
+    """
+    write_session(fake_home, "live3", [
+        ("toolu_d", "dddddddddddddddd", "live work", "general-purpose", "sonnet")])
+    write_agent(fake_home, "dddddddddddddddd",
+                "2026-08-20T10:00:00.000Z", "2026-08-20T10:01:00.000Z")
+    write_session(fake_home, "dead3", [
+        ("toolu_e", "eeeeeeeeeeeeeeee", "old work", "general-purpose", "sonnet")])
+    write_agent(fake_home, "eeeeeeeeeeeeeeee",
+                "2026-08-20T10:00:00.000Z", "2026-08-20T10:01:00.000Z")
+    age_transcript(fake_home, "live3", 60)
+    age_transcript(fake_home, "dead3", 40 * 3600)
+
+    default = {r.agent_id for s in reader.fleet() for r in s.runs}
+    everything = {r.agent_id for s in reader.fleet(include_cold=True) for r in s.runs}
+    assert default == {"dddddddddddddddd"}
+    assert everything == {"dddddddddddddddd", "eeeeeeeeeeeeeeee"}
+    assert all(s.read for s in reader.fleet(include_cold=True))

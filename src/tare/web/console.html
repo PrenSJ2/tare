@@ -163,6 +163,7 @@
     <p style="margin-bottom:.8rem">Reconstructed from each agent's own transcript, so it covers everything
        ever run, not only what happened while this page was open.</p>
     <div id="fleet"></div>
+    <div id="earlier"></div>
   </section>
 
   <section data-view="orch" hidden>
@@ -200,6 +201,13 @@ const fmt = n => (n ?? 0).toLocaleString("en-GB");
 const clock = s => s == null ? "—" : (s >= 60 ? `${Math.floor(s/60)}m ${String(s%60).padStart(2,"0")}s` : `${s}s`);
 const shortProj = n => n.replace(/^-Users-[^-]+-/, "").replace(/^Documents-Code-?/, "") || "Code";
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+// Session ages run to days; `clock` is built for agent-length spans.
+// A null or non-finite age means the transcript could not be read, which is
+// "unknown" and must not render as a number.
+const since = s => (s == null || !isFinite(s)) ? "unknown"
+  : s < 3600 ? `${Math.round(s/60)}m` : s < 86400 ? `${Math.round(s/3600)}h`
+  : `${Math.round(s/86400)}d`;
+let earlierOpen = false, earlierData = null;
 
 document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => {
   document.querySelectorAll("nav button").forEach(o => o.setAttribute("aria-selected", String(o === b)));
@@ -406,7 +414,7 @@ const tree = (() => {
     for (const n of N) { const d=(n.x-x)**2+(n.y-y)**2; if (d<bd) { bd=d; best=n; } }
     picked = best;
     if (!best) { insp.hidden = true; return; }
-    const agents = D.fleet.projects.flatMap(p => p.agents);
+    const agents = D.fleet.sessions.flatMap(s => s.agents);
     const match = agents.find(a => a.id === best.id);
     insp.hidden = false;
     insp.innerHTML = `<h4>${esc(match ? match.label : best.id)}</h4>
@@ -472,35 +480,45 @@ function render(first) {
     <div class="track"><div class="fill ${r.idx?"idx":""}" style="width:${(100*r.tok/maxTok).toFixed(1)}%"></div></div>
     <div class="num">${fmt(r.tok)} tok</div></div>`).join("");
 
-  const agents = D.fleet.projects.flatMap(p => p.agents);
+  const sessions = D.fleet.sessions || [];
+  const agents = sessions.flatMap(s => s.agents);
   const timed = agents.filter(a => a.secs != null);
   const runningN = agents.filter(a => a.status === "running").length;
+  const liveS = sessions.filter(s => s.state === "live");
+  const overS = sessions.filter(s => s.state !== "live");
+  const busy = liveS.filter(s => s.agents.length);
+  const idle = liveS.length - busy.length;
+
   $("aled").innerHTML = [
-    ["agents recorded", fmt(agents.length), ""], ["running", fmt(runningN), runningN ? "on" : ""],
+    ["agents (live sessions)", fmt(agents.length), ""], ["running", fmt(runningN), runningN ? "on" : ""],
     ["agent time", Math.round(timed.reduce((s,a)=>s+a.secs,0)/60)+"m", ""],
     ["longest", clock(timed.length ? Math.max(...timed.map(a=>a.secs)) : null), ""],
-    ["projects", fmt(D.fleet.projects.length), ""],
+    ["sessions live", fmt(liveS.length), liveS.length ? "on" : ""],
   ].map(([k,v,c]) => `<div class="cell"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join("");
 
   // Remember which agents the reader had open, so a refresh does not close them.
   openAgents = new Set([...document.querySelectorAll("details.agent[open]")].map(d => d.dataset.id));
-  $("fleet").innerHTML = D.fleet.projects.map(p => {
-    const live = p.agents.filter(a => a.status === "running").length;
-    return `<h3 style="font-family:var(--mono);font-size:.74rem;margin:1.1rem 0 .4rem;color:var(--ink-soft)">
-      ${esc(shortProj(p.name))} <span class="meta">${p.agents.length} agents${live?` · ${live} running`:""}</span></h3>` +
-      p.agents.slice(0,40).map(a => `<details class="agent" data-s="${esc(a.status)}" data-id="${esc(a.id)}"${
-        openAgents.has(a.id) ? " open" : ""}><summary>
-        <span class="lbl2">${esc(a.label)}</span>
-        <span class="meta">${esc(a.model||"?")} · ${a.turns} turns</span>
-        <span class="meta">${a.status==="running"?"running":clock(a.secs)}</span></summary>
-        <div class="brain">
-          <div><h5>reached for</h5>${a.tools.length ? a.tools.map(([n,c])=>`<span class="chip">${esc(n)} ${c}</span>`).join("") : '<span class="meta">none</span>'}</div>
-          <div><h5>files</h5>${a.files.length ? `<ul class="plain">${a.files.map(f=>`<li title="${esc(f)}">${esc(f)}</li>`).join("")}</ul>` : '<span class="meta">none</span>'}</div>
-          <div><h5>ran</h5>${a.cmds.length ? `<ul class="plain">${a.cmds.map(c=>`<li title="${esc(c)}">$ ${esc(c)}</li>`).join("")}</ul>` : '<span class="meta">none</span>'}</div>
-          ${a.report ? `<div class="rep">${esc(a.report)}</div>` : ""}
-        </div></details>`).join("") +
-      (p.agents.length > 40 ? `<div class="meta" style="margin-top:.4rem">… ${p.agents.length-40} more not shown</div>` : "");
-  }).join("");
+
+  // Only sessions that dispatched something get a heading. Eleven of twelve
+  // live sessions on a working machine have dispatched nothing, and eleven
+  // empty headings are the noise this view was built to remove.
+  $("fleet").innerHTML = busy.map(s => sessionBlock(s, false)).join("")
+    + (idle ? `<div class="meta" style="margin:.9rem 0">${idle} other session${
+        idle === 1 ? "" : "s"} open, none dispatching</div>` : "")
+    + (busy.length || idle ? "" : `<div class="meta">no sessions open</div>`);
+
+  $("earlier").innerHTML = overS.length ? `<details class="agent" id="earlierFold"${
+      earlierOpen ? " open" : ""}><summary>
+      <span class="lbl2">earlier — ${overS.length} session${overS.length === 1 ? "" : "s"}</span>
+      <span class="meta">last over ${since(Math.min(...overS.map(s => s.age ?? Infinity)))} ago</span>
+      </summary><div id="earlierBody" class="brain"><span class="meta">reading…</span></div>
+      </details>` : "";
+  const fold = $("earlierFold");
+  if (fold) fold.addEventListener("toggle", () => {
+    earlierOpen = fold.open;
+    if (fold.open) loadEarlier();
+  });
+  if (earlierOpen && earlierData) renderEarlier();
 
   const O = D.orch || {edges:[], files:[], tools:[], depth:{}};
   const branchers = new Set(O.edges.map(e => e.p));
@@ -527,7 +545,54 @@ function render(first) {
   graph.ingest(); tree.ingest();
   $("pulse").textContent = `${runningN} running · updated ${new Date().toLocaleTimeString("en-GB")}`;
   $("foot").textContent = `${D.nodes.length} capabilities · ${D.edges.length} routes-to edges · `
-    + `${agents.length} agents · read from ~/.claude/harness.db and the transcripts`;
+    + `${agents.length} agents in live sessions · read from ~/.claude/harness.db and the transcripts`;
+}
+
+function sessionBlock(s, dim) {
+  // A session that is over says WHY, and whether that is certain: an
+  // ended/session_end verdict is observed, a cold/mtime one is inferred.
+  const why = s.state === "live" ? "live"
+    : s.state === "ended" ? `ended · ${esc(s.reason || "unknown")}`
+    : `cold · no write in ${since(s.age)}`;
+  return `<h3 style="font-family:var(--mono);font-size:.74rem;margin:1.1rem 0 .4rem;${
+      dim ? "opacity:.6;" : ""}color:var(--ink-soft)">
+    ${esc(shortProj(s.project))} <span class="meta">${why} · ${s.agents.length} agents</span></h3>`
+    + s.agents.slice(0,40).map(a => `<details class="agent" data-s="${esc(a.status)}" data-id="${esc(a.id)}"${
+      openAgents.has(a.id) ? " open" : ""}><summary>
+      <span class="lbl2">${esc(a.label)}</span>
+      <span class="meta">${esc(a.model||"?")} · ${a.turns} turns</span>
+      <span class="meta">${a.status==="running"?"running":clock(a.secs)}</span></summary>
+      <div class="brain">
+        <div><h5>reached for</h5>${a.tools.length ? a.tools.map(([n,c])=>`<span class="chip">${esc(n)} ${c}</span>`).join("") : '<span class="meta">none</span>'}</div>
+        <div><h5>files</h5>${a.files.length ? `<ul class="plain">${a.files.map(f=>`<li title="${esc(f)}">${esc(f)}</li>`).join("")}</ul>` : '<span class="meta">none</span>'}</div>
+        <div><h5>ran</h5>${a.cmds.length ? `<ul class="plain">${a.cmds.map(c=>`<li title="${esc(c)}">$ ${esc(c)}</li>`).join("")}</ul>` : '<span class="meta">none</span>'}</div>
+        ${a.report ? `<div class="rep">${esc(a.report)}</div>` : ""}
+      </div></details>`).join("")
+    + (s.agents.length > 40 ? `<div class="meta" style="margin-top:.4rem">… ${s.agents.length-40} more not shown</div>` : "");
+}
+
+function loadEarlier() {
+  if (earlierData) return renderEarlier();
+  fetch("/api/data?earlier=1", {cache:"no-store"})
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then(next => { earlierData = (next.fleet.sessions || []).filter(s => s.state !== "live");
+                    renderEarlier(); })
+    .catch(() => { $("earlierBody").innerHTML =
+      '<span class="meta">could not read the earlier sessions</span>'; });
+}
+
+function renderEarlier() {
+  // The parse has run now for anything actually read, so "dispatched nothing"
+  // is a fact rather than an unknown FOR THOSE -- and they are worth a count,
+  // not a heading each. Filtered on `read` rather than assumed: this route
+  // happens to read every session it returns today, but the claim below must
+  // stay true even if that ever stops being unconditional.
+  const read = earlierData.filter(s => s.read);
+  const busy = read.filter(s => s.agents.length);
+  const quiet = read.length - busy.length;
+  $("earlierBody").innerHTML = busy.map(s => sessionBlock(s, true)).join("")
+    + (quiet ? `<div class="meta" style="margin-top:.6rem">+${quiet} dispatched no agents</div>` : "")
+    || '<span class="meta">no agents in any earlier session</span>';
 }
 
 function refresh() {
