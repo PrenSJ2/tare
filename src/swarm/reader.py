@@ -58,6 +58,21 @@ STALE_AFTER_SECONDS = 900
 # and does not survive overnight.
 SESSION_COLD_AFTER_SECONDS = 3600
 
+# `claude --resume` / `claude -c` reuses the session id and keeps appending to
+# the same transcript, so a session_end record does not retire the id -- it
+# only records that the session ended ONCE. A transcript still being written
+# long afterwards means the record is stale, and honouring it would hide a
+# live session, which is the one error this must never make.
+#
+# Measured on the real corpus: a normal end has
+# transcript_mtime - session_end_ts in [-38m, ~0] (a session can idle a while
+# before it actually exits, so negative is the normal case); a resumed one
+# measured +4167 and +16685 minutes. 120s sits safely inside the gap between
+# those two populations -- generous enough that the normal population's
+# essentially-simultaneous write never trips it, nowhere near the smallest
+# resumed gap.
+SESSION_END_STALE_AFTER_SECONDS = 120
+
 
 @dataclass
 class AgentRun:
@@ -136,16 +151,23 @@ def session_transcript(session: str) -> Path | None:
 # sessions on every payload build. Keyed on the files' own identity rather
 # than a clock, so a stream appended to mid-session is re-read and a finished
 # one is not.
-_ENDED_CACHE: dict[str, tuple[tuple, str | None]] = {}
+_ENDED_CACHE: dict[str, tuple[tuple, tuple[str, datetime | None] | None]] = {}
 
 
-def _session_end_reason(session: str) -> str | None:
-    """The reason a session's stream says it ended, or None if it never did.
+def _latest_session_end(session: str) -> tuple[str, datetime | None] | None:
+    """The most recent (reason, ts) a session's stream says it ended, or None.
 
     swarm's SessionEnd hook writes this record; `project()` carries the reason
     through. It is the only signal that can say a session is over rather than
     merely quiet -- but it exists for a session only if the recording hooks
     were registered when it ran, which is why every caller has a fallback.
+
+    `claude --resume` reuses the session id, so a stream can carry more than
+    one session_end record for it -- the session ended, was resumed, and may
+    have ended again. The LATEST one is what is current, not the first one on
+    disk: files are scanned oldest-first (sorted by name) and records within a
+    file are appended in order, so simply not stopping at the first match and
+    keeping the last one seen yields the latest.
 
     A session crossing UTC midnight writes more than one stream file, so every
     file carrying the id is scanned.
@@ -168,16 +190,14 @@ def _session_end_reason(session: str) -> str | None:
     if cached is not None and cached[0] == key:
         return cached[1]
 
-    reason = None
+    latest: tuple[str, datetime | None] | None = None
     for path in streams:
         for obj in _iter_json(path):
             if obj.get("event") == "session_end":
                 reason = obj.get("reason") or "unknown"
-                break
-        if reason is not None:
-            break
-    _ENDED_CACHE[session] = (key, reason)
-    return reason
+                latest = (reason, _ts(obj.get("ts")))
+    _ENDED_CACHE[session] = (key, latest)
+    return latest
 
 
 def session_state(project: str, session: str, *,
@@ -194,6 +214,14 @@ def session_state(project: str, session: str, *,
     them. This is the same discipline `shells.py` follows when it says
     "project" where it cannot say "session".
 
+    A `session_end` record is trusted only while it is fresh. `claude --resume`
+    / `claude -c` reuses the session id and keeps appending to the same
+    transcript, so a session_end record does not retire the id -- it only
+    records that the session ended ONCE. A transcript still being written long
+    afterwards means the record is stale, and honouring it would hide a live
+    session, which is the one error this must never make. See
+    SESSION_END_STALE_AFTER_SECONDS for the measured boundary.
+
     The process table was considered as a third signal and rejected: a
     `claude` process exposes its working directory and not its session id, so
     it can only speak at project granularity -- and a repository with three
@@ -202,18 +230,28 @@ def session_state(project: str, session: str, *,
     reference = now or datetime.now().astimezone()
     transcript = session_transcript(session)
     age = float("inf")
+    mtime_epoch: float | None = None
     if transcript is not None:
         try:
+            mtime_epoch = transcript.stat().st_mtime
             # Clamped at zero: a future mtime means clock skew, and a
             # live-looking dead session is a smaller lie than a hidden live one.
-            age = max(0.0, reference.timestamp() - transcript.stat().st_mtime)
+            age = max(0.0, reference.timestamp() - mtime_epoch)
         except OSError:
             age = float("inf")   # unreadable is not a session we may call live
 
-    reason = _session_end_reason(session)
-    if reason is not None:
-        return SessionState(session=session, project=project, state="ended",
-                            by="session_end", age=age, reason=reason)
+    found = _latest_session_end(session)
+    if found is not None:
+        reason, end_ts = found
+        # Staleness needs both a timestamp on the record and a readable
+        # transcript to compare it against. Missing either means freshness
+        # cannot be verified, and the safe default is to NOT trust a
+        # certainty that cannot be checked -- fall through to the mtime tier.
+        stale = end_ts is None or mtime_epoch is None or (
+            mtime_epoch - end_ts.timestamp() > SESSION_END_STALE_AFTER_SECONDS)
+        if not stale:
+            return SessionState(session=session, project=project, state="ended",
+                                by="session_end", age=age, reason=reason)
 
     state = "live" if age < SESSION_COLD_AFTER_SECONDS else "cold"
     return SessionState(session=session, project=project, state=state,

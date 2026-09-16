@@ -61,7 +61,11 @@ Two signals, in order of certainty.
 **`session_end`, from swarm's own stream.** `swarm install` already registers a
 `SessionEnd` recording hook, and `project()` already writes the record with its
 `reason`. When one exists for a session id, that session is over and we know
-it.
+it -- *while the record is still fresh*. `claude --resume` / `claude -c`
+reuses the session id and keeps appending to the same transcript, so the
+record only says the session ended ONCE, not that the id is retired. A
+transcript written to long after the record is proof the record is stale, and
+that case is corrected below (see *What the rule does on the real corpus*).
 
 **Transcript mtime, for everything else.** No `session_end` and no write in
 `SESSION_COLD_AFTER_SECONDS` → presumed over.
@@ -93,8 +97,30 @@ ended · tare         67.2h   prompt_input_exit
 … 9 more
 ```
 
-The cctv row is the design earning its keep: written twelve minutes ago, so
-mtime alone would have called it live, and `session_end` overrides correctly.
+**Correction, added at final review — the cctv row above was wrong, and it is
+worth saying so plainly rather than quietly editing the claim away.** This
+spec originally read: *"The cctv row is the design earning its keep: written
+twelve minutes ago, so mtime alone would have called it live, and
+`session_end` overrides correctly."* That is false. cctv's transcript was not
+written twelve minutes before this table — it was written 278 hours (11.6
+days) after its `session_end` record. `claude --resume` reuses the session id
+and keeps appending to the same transcript, so a `session_end` does not retire
+the id; it only records that the session ended ONCE. cctv had been resumed
+after that record was written, mtime was the correct signal the whole time,
+and this design as first written would have reported it `ended` permanently —
+exactly the error this spec says must never happen: *"a live-looking dead
+session is a smaller lie than a hidden live one."* A second session
+(`bookteamworks`, not part of this original 25-session window) showed the same
+pattern, 69 hours stale. Both are why `session_state()` now discards a
+`session_end` record once the transcript was written more than
+`SESSION_END_STALE_AFTER_SECONDS` (120s) after it, and falls through to mtime
+instead — the reader module documents the measured gap between a normal end
+(≈0 or slightly negative) and a resumed one (thousands of minutes) that makes
+120s a safe cutoff. Re-run at fix time, on a later 25-session window (time had
+moved on, so it is not the identical set of sessions above), the counts moved
+from `live 12 / ended 13 / cold 0` to `live 14 / ended 11 / cold 0`, with
+exactly the two resumed sessions reclassified from `ended` to `live` and
+nothing else in the window affected.
 
 **The `cold` tier fires zero times here**, because every session in the window
 that is over has a `session_end` record. Across all 191 streams on disk only 81
@@ -154,9 +180,12 @@ class SessionState:
 ```
 
 `session_state(project, session, *, now=None) -> SessionState` looks for
-`runs_dir()/*-{session}.jsonl` and scans for `event == "session_end"`. Found →
-`ended`, `by="session_end"`, carrying the reason. Not found → `age` against the
-window → `live` or `cold`, `by="mtime"`.
+`runs_dir()/*-{session}.jsonl` and scans for `event == "session_end"`, keeping
+the LATEST such record rather than the first — a resumed session can carry
+more than one. Found, and fresh (the transcript was not written more than
+`SESSION_END_STALE_AFTER_SECONDS` after it — see the correction above) →
+`ended`, `by="session_end"`, carrying the reason. Not found, or found but
+stale → `age` against the window → `live` or `cold`, `by="mtime"`.
 
 A session's stream can span several files when it crosses UTC midnight, so all
 matching files are scanned. Results are cached on `(path, mtime, size)`,
@@ -271,13 +300,18 @@ all_sessions()  ──▶  session_state() per candidate   (stat + small read)
 
 `tests/swarm_reader.py`:
 
-- each state and each deciding signal: `session_end` present → `ended`
-  regardless of mtime; absent and warm → `live`; absent and cold → `cold`
+- each state and each deciding signal: `session_end` present and fresh →
+  `ended`; absent and warm → `live`; absent and cold → `cold`
 - the window boundary, either side of 3600s
 - a stream spanning two days still resolves its `session_end`
 - `reason` is carried through, and `"clear"` yields `ended`
 - missing `runs/` → every session resolves `by="mtime"`, exercising the tier
   the live corpus does not reach
+- a `session_end` stale by more than `SESSION_END_STALE_AFTER_SECONDS` falls
+  through to `mtime` — the resumed-session case the correction above exists
+  for — with both sides of that boundary asserted
+- two `session_end` records for one session, across two day-files, report the
+  LATEST reason, not the oldest
 
 **Nothing is lost.** `fleet(include_cold=True)` returns exactly the agents the
 current `fleet()` returns, for the same corpus. This is the README's bargain
