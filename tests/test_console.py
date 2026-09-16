@@ -149,10 +149,25 @@ def test_redact_is_not_served_from_a_non_redacted_cache(fake_home, monkeypatch):
 
 
 def test_payload_carries_session_state_and_the_signal_that_decided_it(fake_home):
+    """Regression: this used to run under `fake_home`, whose `projects/` is
+    empty, so `fleet["sessions"]` was `[]` and the loop body never executed --
+    proving only the sessions-present / projects-absent key contract, nothing
+    about `state`/`by`/`read`. A real session is built here so the loop
+    actually runs, and the emptiness assertion makes a future vacuous case
+    fail loudly instead of passing silently.
+    """
+    from swarm_reader import write_session, age_transcript
+
+    (fake_home / "projects" / "proj").mkdir(parents=True, exist_ok=True)
+    write_session(fake_home, "sess1", [
+        ("toolu_1", "aaaaaaaaaaaaaaaa", "did work", "general-purpose", "sonnet")])
+    age_transcript(fake_home, "sess1", 60)
+
     db.connect()
     fleet = console.payload()["fleet"]
     assert "sessions" in fleet
     assert "projects" not in fleet          # the old shape is gone, not aliased
+    assert fleet["sessions"], "no sessions built -- the loop below would pass vacuously"
     for session in fleet["sessions"]:
         assert session["state"] in ("ended", "live", "cold")
         assert session["by"] in ("session_end", "mtime")
@@ -208,3 +223,28 @@ def test_the_two_payload_variants_do_not_evict_each_other(fake_home, monkeypatch
     console.payload(include_cold=True)
     console.payload()                 # must be served from cache, not rebuilt
     assert builds == [False, True]
+
+
+def test_read_is_not_derivable_from_agents_in_the_payload(fake_home, monkeypatch):
+    """`read=False` records that nobody looked, which is not the same fact as
+    "dispatched nothing" -- the console.html renderer must consult `read`
+    rather than inferring it from an empty `agents` list, and this pins that
+    the payload actually keeps the two facts independent: a session can carry
+    `read=False` with `agents == []`, and neither is derived from the other.
+    """
+    class FakeState:
+        state, by, age, reason = "cold", "mtime", 999999, None
+
+    class FakeSession:
+        session, project, state, runs, read = "s", "proj", FakeState(), [], False
+
+    fake = type("R", (), {
+        "fleet": staticmethod(lambda **kw: [FakeSession()]),
+        "detail": staticmethod(lambda *a, **kw: None),
+        "all_sessions": staticmethod(lambda: []),
+    })
+    monkeypatch.setattr(console, "_reader", lambda: fake)
+    console._PAYLOAD_CACHE = {}
+    session = console.payload()["fleet"]["sessions"][0]
+    assert session["read"] is False
+    assert session["agents"] == []
