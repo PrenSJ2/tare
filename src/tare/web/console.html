@@ -490,7 +490,7 @@ function render(first) {
   const idle = liveS.length - busy.length;
 
   $("aled").innerHTML = [
-    ["agents recorded", fmt(agents.length), ""], ["running", fmt(runningN), runningN ? "on" : ""],
+    ["agents (live sessions)", fmt(agents.length), ""], ["running", fmt(runningN), runningN ? "on" : ""],
     ["agent time", Math.round(timed.reduce((s,a)=>s+a.secs,0)/60)+"m", ""],
     ["longest", clock(timed.length ? Math.max(...timed.map(a=>a.secs)) : null), ""],
     ["sessions live", fmt(liveS.length), liveS.length ? "on" : ""],
@@ -545,7 +545,7 @@ function render(first) {
   graph.ingest(); tree.ingest();
   $("pulse").textContent = `${runningN} running · updated ${new Date().toLocaleTimeString("en-GB")}`;
   $("foot").textContent = `${D.nodes.length} capabilities · ${D.edges.length} routes-to edges · `
-    + `${agents.length} agents · read from ~/.claude/harness.db and the transcripts`;
+    + `${agents.length} agents in live sessions · read from ~/.claude/harness.db and the transcripts`;
 }
 
 function sessionBlock(s, dim) {
@@ -582,10 +582,14 @@ function loadEarlier() {
 }
 
 function renderEarlier() {
-  // The parse has run now, so "dispatched nothing" is a fact rather than an
-  // unknown -- and those sessions are worth a count, not a heading each.
-  const busy = earlierData.filter(s => s.agents.length);
-  const quiet = earlierData.length - busy.length;
+  // The parse has run now for anything actually read, so "dispatched nothing"
+  // is a fact rather than an unknown FOR THOSE -- and they are worth a count,
+  // not a heading each. Filtered on `read` rather than assumed: this route
+  // happens to read every session it returns today, but the claim below must
+  // stay true even if that ever stops being unconditional.
+  const read = earlierData.filter(s => s.read);
+  const busy = read.filter(s => s.agents.length);
+  const quiet = read.length - busy.length;
   $("earlierBody").innerHTML = busy.map(s => sessionBlock(s, true)).join("")
     + (quiet ? `<div class="meta" style="margin-top:.6rem">+${quiet} dispatched no agents</div>` : "")
     || '<span class="meta">no agents in any earlier session</span>';
